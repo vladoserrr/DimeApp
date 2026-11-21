@@ -94,18 +94,18 @@ async function handleAdminInput(msg,action){
   if(!ownerId){await telegramApi("sendMessage",{chat_id:chatId,text:"Операция отменена: не задан CASINO_OWNER_TELEGRAM_ID в Railway Variables."});return;}
   const from=action==="withdraw"?target:ownerId,to=action==="withdraw"?ownerId:target;
   try{
-   const source=await balance(from);
-   if(Number(source.balance)<amount){await telegramApi("sendMessage",{chat_id:chatId,text:"Недостаточно звёзд на счёте отправителя. Доступно: "+(Number(source.balance)||0)+" ⭐️. Перевод не выполнен."});return;}
+   // Один атомарный перевод вместо отдельного чтения баланса и последующего перевода.
    const result=await transfer(from,to,amount,"admin-"+action+"-"+crypto.randomUUID(),action==="withdraw"?"Списание администратором":"Начисление администратором");
    const updated=await balance(to).catch(()=>null);
-   await telegramApi("sendMessage",{chat_id:chatId,text:(action==="withdraw"?"✅ Списано ":"✅ Начислено ")+amount+" ⭐️ пользователю "+parts[0]+"."+(updated?"\nНовый баланс получателя: "+Number(updated.balance||0)+" ⭐️.":"")});
+   const newBalance=updated&&Number.isFinite(Number(updated.balance))?"\nНовый баланс получателя: "+Number(updated.balance)+" ⭐️.":"";
+   await telegramApi("sendMessage",{chat_id:chatId,text:(action==="withdraw"?"✅ Списано ":"✅ Начислено ")+amount+" ⭐️ пользователю "+parts[0]+"."+newBalance});
   }catch(e){
    console.error("Admin balance transfer failed:",{action,target,amount,error:e.message});
-   const reason=String(e.message||"");
+   const reason=String(e.message||"Ошибка перевода");
    const message=/Пользователь не найден|not found|недоступен/i.test(reason)
-    ?(action==="withdraw"?"У пользователя нет активного счёта в сервисе балансов. Сначала он должен открыть приложение Пончика.":"Счёт получателя ещё не создан. Попробуй повторить начисление — новый счёт будет создан автоматически.")
-    :/Недостаточно|insufficient|balance/i.test(reason)?"Недостаточно средств на счёте отправителя.":"Ошибка сервиса балансов: "+reason;
-   await telegramApi("sendMessage",{chat_id:chatId,text:"❌ "+message});
+    ?(action==="withdraw"?"Не найден счёт пользователя. Проверь Telegram ID и убедись, что пользователь зарегистрирован в системе баланса.":"Не найден счёт получателя. Проверь Telegram ID и регистрацию пользователя в системе баланса.")
+    :/Недостаточно|insufficient/i.test(reason)?"На счёте отправителя недостаточно звёзд.":"Перевод отклонён: "+reason;
+   await telegramApi("sendMessage",{chat_id:chatId,text:"❌ "+message+"\nСредства не списаны, если сервис не подтвердил перевод."});
   }
   return;
  }
@@ -228,20 +228,23 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ возвращены на твой баланс.":p.status==="failed"?"Не удалось списать звёзды. Проверь баланс и попробуй ещё раз.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
  }
 }
+const referralBusy=new Set();
 async function registerReferral(userId,payload){
  const id=String(userId),match=/^invite_(\d+)$/.exec(String(payload||""));
- const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
- u.registered=true;
- if(match&&match[1]!==id&&!u.referrer&&!u.referralRewarded&&!u.pendingReferrer)u.pendingReferrer=String(match[1]);
- const ref=String(u.pendingReferrer||"");
- if(!ref||ref===id||u.referralRewarded){saveStore();return;}
- const owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
- owner.referrals=Array.isArray(owner.referrals)?owner.referrals:[];
- if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;delete u.pendingReferrer;saveStore();return;}
- if(!ownerId){console.error("Referral reward failed: CASINO_OWNER_TELEGRAM_ID is not configured");saveStore();return;}
+ if(referralBusy.has(id))return;
+ referralBusy.add(id);
  try{
-  const reserve=await balance(ownerId);
-  if(Number(reserve.balance)<2)throw Error("Недостаточно средств в резерве для реферальной награды");
+  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+  u.registered=true;
+  if(match&&match[1]!==id&&!u.referrer&&!u.referralRewarded&&!u.pendingReferrer)u.pendingReferrer=String(match[1]);
+  const ref=String(u.pendingReferrer||"");
+  if(!ref||ref===id||u.referralRewarded){saveStore();return;}
+  const owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+  owner.referrals=Array.isArray(owner.referrals)?owner.referrals:[];
+  if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;delete u.pendingReferrer;saveStore();return;}
+  if(!ownerId)throw Error("Не задан Telegram ID владельца для выплаты");
+  // Не делаем отдельный запрос баланса: перевод сам проверяет резерв.
+  // Так сбой чтения баланса не блокирует корректное начисление.
   await transfer(ownerId,ref,2,"referral-"+id,"Награда за приглашение");
   owner.referrals.push(id);
   owner.earned=(Number(owner.earned)||0)+2;
@@ -251,9 +254,9 @@ async function registerReferral(userId,payload){
    await telegramApi("sendMessage",{chat_id:Number(ref),text:"🎉 Поздравляем! Твой друг присоединился по твоей ссылке.\n\n⭐️ Тебе начислено +2 звезды за приглашение!"});
   }catch(notifyError){console.error("Referral notification failed:",notifyError.message);}
  }catch(e){
-  console.error("Referral reward failed:",{inviter:ref,invited:id,error:e.message});
+  console.error("Referral reward failed:",{inviter:String(store.users[id]?.pendingReferrer||""),invited:id,error:e.message});
   saveStore();
- }
+ }finally{referralBusy.delete(id);}
 }
 const promoBusy=new Set();
 async function handlePromoMessage(msg){
