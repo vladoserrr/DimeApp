@@ -106,7 +106,7 @@ async function beginGiftPurchase(chatId,messageId,userId,index,page){
 async function registerReferral(userId,payload){
  const id=String(userId),isNew=!store.users[id];if(!isNew)return;
  const u=store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()};
- const match=/^invite_(\\d+)$/.exec(payload||"");if(!match||match[1]===id)return;
+ const match=/^invite_(\d+)$/.exec(payload||"");if(!match||match[1]===id)return;
  const ref=match[1],owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
  if(owner.referrals.includes(id))return;
  try{await transfer(ownerId,ref,2,"dime-referral-"+id,"Награда за приглашение DIME");owner.referrals.push(id);owner.earned=(Number(owner.earned)||0)+2;u.referrer=ref;saveStore();}
