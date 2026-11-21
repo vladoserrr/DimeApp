@@ -119,8 +119,8 @@ async function notifyAdminPurchase(userId,user,type,p){
  const username=user?.username?"@"+user.username:"не указан";
  const full=[user?.first_name,user?.last_name].filter(Boolean).join(" ")||"Имя не указано";
  const item=type==="premium"?"Telegram Premium · "+p.months+" месяца(ев)":(p.name||"Telegram-подарок");
- const message="✅ УСПЕШНАЯ ПОКУПКА DIME\n\nПользователь: "+full+"\nUsername: "+username+"\nTelegram ID: "+userId+"\nПокупка: "+item+"\nСписано: "+p.starCount+" ⭐️ DIME";
- try{await telegramApi("sendMessage",{chat_id:Number(ownerId),text:message});}catch(e){console.error("Purchase admin notification failed:",e.message);}
+ const message="🛒 НОВЫЙ ОПЛАЧЕННЫЙ ЗАКАЗ DIME\n\nПользователь: "+full+"\nUsername: "+username+"\nTelegram ID: "+userId+"\nПокупка: "+item+"\nСписано: "+p.starCount+" ⭐️ DIME\n\nОбычно отправка занимает до 48 часов.";
+ try{await telegramApi("sendMessage",{chat_id:Number(ownerId),text:message,reply_markup:{inline_keyboard:[[{text:"Отправил",callback_data:"order_sent:"+Object.keys(store.pending).find(k=>store.pending[k]===p)}]]}});}catch(e){console.error("Purchase admin notification failed:",e.message);}
 }
 async function getGifts(){
  if(giftCache&&Date.now()-giftCacheAt<30000)return giftCache;
@@ -197,17 +197,14 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  try{
   if(!ownerId)throw Error("Не задан CASINO_OWNER_TELEGRAM_ID");
   await transfer(id,ownerId,p.starCount,debitRef,"Покупка "+(p.type==="premium"?"Telegram Premium":p.name||"подарка"));debited=true;
-  if(p.type==="gift"){
-   await telegramApi("sendGift",{user_id:Number(id),gift_id:p.giftId,text:"Подарок от DIME CASINO"});
-  }else if(p.type==="premium"){
-   await telegramApi("giftPremiumSubscription",{user_id:Number(id),month_count:p.months,star_count:p.starCount,text:"Telegram Premium от DIME CASINO"});
-  }else throw Error("Неизвестный тип покупки");
-  p.status="completed";p.completedAt=Date.now();
+  if(p.type!=="gift"&&p.type!=="premium")throw Error("Неизвестный тип покупки");
+  p.status="paid_pending_delivery";p.paidAt=Date.now();p.deliveryNotified=false;
   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
   if(p.type==="gift")u.gifts=(Number(u.gifts)||0)+1;
   saveStore();
   await notifyAdminPurchase(id,{username:u.username,first_name:u.firstName,last_name:u.lastName},p.type,p);
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎉 Покупка успешно выполнена!\n\n"+(p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев) отправлен.":"Подарок отправлен в твой Telegram.")+"\nСписано: "+p.starCount+" ⭐️ DIME.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+  const purchaseName=p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев)":(p.name||"выбранный подарок");
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+p.starCount+" ⭐️ DIME.\n\nОбычно отправка занимает до 48 часов. Когда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
  }catch(e){
   console.error("DIME shop purchase failed:",e.message);
   if(debited){
@@ -267,6 +264,16 @@ async function handleTelegramUpdate(update){
   if(store.blocked[String(userId)]&&!isAdmin(cb.from)){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Доступ к боту ограничен.",show_alert:true});return;}
   if(!chatId||!messageId||!userId){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
   try{
+   if(isAdmin(cb.from)&&cb.data.startsWith("order_sent:")){
+    await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+    const purchaseId=cb.data.slice("order_sent:".length),order=store.pending[purchaseId];
+    if(!order||order.status!=="paid_pending_delivery"){await telegramApi("sendMessage",{chat_id:chatId,text:"Этот заказ уже отмечен или не найден."});return;}
+    order.status="sent";order.sentAt=Date.now();order.sentBy=String(userId);saveStore();
+    const what=order.type==="premium"?"Telegram Premium на "+order.months+" месяца(ев)":(order.name||"выбранный подарок");
+    await telegramApi("sendMessage",{chat_id:Number(order.userId),text:"🎉 Твой заказ отправлен!\n\n"+what+"\nСпасибо за покупку в DIME!"});
+    await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Заказ отмечен как отправленный.\n\n"+what+"\nПользователь уведомлён."});
+    return;
+   }
    if(isAdmin(cb.from)&&cb.data==="adm:home"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showAdminMenu(chatId,messageId);return;}
    if(isAdmin(cb.from)&&cb.data.startsWith("adm:")){
     await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
