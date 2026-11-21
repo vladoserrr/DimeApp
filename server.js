@@ -92,21 +92,16 @@ async function handleAdminInput(msg,action){
   const parts=raw.split(/\s+/),target=resolveAdminTarget(parts[0]),amount=Number(parts[1]);
   if(!target||!Number.isSafeInteger(amount)||amount<1||amount>1000000){await telegramApi("sendMessage",{chat_id:chatId,text:"Неверный формат. Отправь: ID_или_@username целая_сумма\nНапример: @username 250"});return;}
   if(!ownerId){await telegramApi("sendMessage",{chat_id:chatId,text:"Операция отменена: не задан CASINO_OWNER_TELEGRAM_ID в Railway Variables."});return;}
-  const from=action==="withdraw"?target:ownerId,to=action==="withdraw"?ownerId:target;
-  try{
-   // Один атомарный перевод вместо отдельного чтения баланса и последующего перевода.
-   const result=await transfer(from,to,amount,"admin-"+action+"-"+crypto.randomUUID(),action==="withdraw"?"Списание администратором":"Начисление администратором");
-   const updated=await balance(to).catch(()=>null);
-   const newBalance=updated&&Number.isFinite(Number(updated.balance))?"\nНовый баланс получателя: "+Number(updated.balance)+" ⭐️.":"";
-   await telegramApi("sendMessage",{chat_id:chatId,text:(action==="withdraw"?"✅ Списано ":"✅ Начислено ")+amount+" ⭐️ пользователю "+parts[0]+"."+newBalance});
-  }catch(e){
-   console.error("Admin balance transfer failed:",{action,target,amount,error:e.message});
-   const reason=String(e.message||"Ошибка перевода");
-   const message=/Пользователь не найден|not found|недоступен/i.test(reason)
-    ?(action==="withdraw"?"Не найден счёт пользователя. Проверь Telegram ID и убедись, что пользователь зарегистрирован в системе баланса.":"Не найден счёт получателя. Проверь Telegram ID и регистрацию пользователя в системе баланса.")
-    :/Недостаточно|insufficient/i.test(reason)?"На счёте отправителя недостаточно звёзд.":"Перевод отклонён: "+reason;
-   await telegramApi("sendMessage",{chat_id:chatId,text:"❌ "+message+"\nСредства не списаны, если сервис не подтвердил перевод."});
+  const sourceId=action==="withdraw"?target:ownerId,recipientId=action==="withdraw"?ownerId:target;
+  const source=store.users[sourceId]||(store.users[sourceId]={referrals:[],earned:0,gifts:0,balance:0});
+  const recipient=store.users[recipientId]||(store.users[recipientId]={referrals:[],earned:0,gifts:0,balance:0});
+  source.balance=Number(source.balance)||0;recipient.balance=Number(recipient.balance)||0;
+  if(source.balance<amount){
+   await telegramApi("sendMessage",{chat_id:chatId,text:"Недостаточно звёзд на внутреннем балансе отправителя. Доступно: "+source.balance+" ⭐️. Операция не выполнена."});
+   return;
   }
+  source.balance-=amount;recipient.balance+=amount;saveStore();
+  await telegramApi("sendMessage",{chat_id:chatId,text:(action==="withdraw"?"✅ Списано ":"✅ Начислено ")+amount+" ⭐️ пользователю "+parts[0]+".\nНовый баланс получателя: "+recipient.balance+" ⭐️."});
   return;
  }
  if(action==="broadcast"){
@@ -161,9 +156,8 @@ async function showInviteMenu(chatId,messageId,userId){
  ]}});
 }
 async function showProfile(chatId,messageId,userId){
- let b;try{b=await balance(userId);}catch(e){b={balance:0};}
- const u=store.users[String(userId)]||{referrals:[],earned:0,gifts:0};
- const text="👤 ТВОЙ ПРОФИЛЬ\n\n⭐ Баланс: "+(Number(b.balance)||0).toLocaleString("ru-RU")+" ⭐️\n👥 Приглашено друзей: "+(u.referrals||[]).length+"\n💰 Заработано звёзд: "+(Number(u.earned)||0)+" ⭐️\n🎁 Куплено подарков: "+(Number(u.gifts)||0);
+ const u=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,balance:0};
+ const text="👤 ТВОЙ ПРОФИЛЬ\n\n⭐ Баланс: "+(Number(u.balance)||0).toLocaleString("ru-RU")+" ⭐️\n👥 Приглашено друзей: "+(u.referrals||[]).length+"\n💰 Заработано звёзд: "+(Number(u.earned)||0)+" ⭐️\n🎁 Куплено подарков: "+(Number(u.gifts)||0);
  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:{inline_keyboard:[
   [{text:"🎟 Промокод",callback_data:"promo_enter"},{text:"⬅️ Назад",callback_data:"main_menu"}]
  ]}});
@@ -207,10 +201,11 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  const p=store.pending[purchaseId],id=String(userId);
  if(!p||p.userId!==id||p.status!=="created")return;
  p.status="processing";saveStore();
- const debitRef="game-shop-debit-"+purchaseId,refundRef="game-shop-refund-"+purchaseId;let debited=false;
+ const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0});let debited=false;
  try{
-  if(!ownerId)throw Error("Не задан CASINO_OWNER_TELEGRAM_ID");
-  await transfer(id,ownerId,p.starCount,debitRef,"Покупка "+(p.type==="premium"?"Telegram Premium":p.name||"подарка"));debited=true;
+  u.balance=Number(u.balance)||0;
+  if(u.balance<p.starCount)throw Error("Недостаточно звёзд на внутреннем балансе бота");
+  u.balance-=p.starCount;debited=true;saveStore();
   if(p.type!=="gift"&&p.type!=="premium")throw Error("Неизвестный тип покупки");
   p.status="paid_pending_delivery";p.paidAt=Date.now();p.deliveryNotified=false;
   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
@@ -222,8 +217,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  }catch(e){
   console.error("Shop purchase failed:",e.message);
   if(debited){
-   try{await transfer(ownerId,id,p.starCount,refundRef,"Возврат неуспешной покупки");p.status="refunded";saveStore();}
-   catch(re){p.status="refund_failed";p.error=re.message;saveStore();console.error("Shop refund failed:",re.message);}
+   u.balance=(Number(u.balance)||0)+Number(p.starCount||0);p.status="refunded";saveStore();
   }else{p.status="failed";p.error=e.message;saveStore();}
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ возвращены на твой баланс.":p.status==="failed"?"Не удалось списать звёзды. Проверь баланс и попробуй ещё раз.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
  }
@@ -242,10 +236,7 @@ async function registerReferral(userId,payload){
   const owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
   owner.referrals=Array.isArray(owner.referrals)?owner.referrals:[];
   if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;delete u.pendingReferrer;saveStore();return;}
-  if(!ownerId)throw Error("Не задан Telegram ID владельца для выплаты");
-  // Не делаем отдельный запрос баланса: перевод сам проверяет резерв.
-  // Так сбой чтения баланса не блокирует корректное начисление.
-  await transfer(ownerId,ref,2,"referral-"+id,"Награда за приглашение");
+  owner.balance=(Number(owner.balance)||0)+2;
   owner.referrals.push(id);
   owner.earned=(Number(owner.earned)||0)+2;
   u.referrer=ref;u.referralRewarded=true;u.referralRewardedAt=Date.now();delete u.pendingReferrer;
@@ -279,26 +270,19 @@ async function handlePromoMessage(msg){
  if(Number(p.limit)>0&&p.used.length>=Number(p.limit))return reply("Лимит активаций промокода исчерпан.");
  const amount=Math.floor(Number(p.amount)||0);
  if(!Number.isSafeInteger(amount)||amount<1)return reply("Промокод создан с некорректной суммой награды. Обратись к администратору.");
- if(!ownerId)return reply("Не удалось активировать награду: не настроен счёт владельца казино. Сообщи администратору.");
  const lock=code+":"+id;
  if(promoBusy.has(lock))return reply("Промокод уже обрабатывается. Попробуй через несколько секунд.");
  promoBusy.add(lock);
  try{
-  const reserve=await balance(ownerId);
-  if(Number(reserve.balance)<amount)return reply("Промокод найден, но в резерве казино недостаточно звёзд для выплаты. Администратор должен пополнить резерв.");
-  const reference="game-promo-"+crypto.randomUUID();
-  await transfer(ownerId,id,amount,reference,"Промокод "+code);
-  p.used.push(id);u.earned=(Number(u.earned)||0)+amount;saveStore();
+  // Награда зачисляется во внутренний баланс Telegram-бота, без внешних переводов.
+  u.balance=(Number(u.balance)||0)+amount;
+  u.earned=(Number(u.earned)||0)+amount;
+  p.used.push(id);
+  saveStore();
   await reply("✅ Успешная активация промокода +"+amount+" ⭐️!");
  }catch(e){
   console.error("Promo activation failed:",{code,userId:id,error:e.message});
-  const reason=String(e.message||"");
-  const message=/не настроен|DONUT_API_URL|DONUT_API_KEY/i.test(reason)
-   ?"Не удалось активировать награду: не настроено соединение с балансом. Администратор должен проверить настройки сервера."
-   :/insufficient|недостаточно|balance/i.test(reason)
-    ?"Промокод найден, но средств в резерве недостаточно для выплаты. Администратор должен пополнить резерв."
-    :"Не удалось начислить награду из-за ошибки перевода. Промокод не списан — попробуй позже.";
-  await reply(message);
+  await reply("Не удалось сохранить начисление. Промокод не отмечен как использованный — попробуй позже.");
  }finally{promoBusy.delete(lock);}
 }
 async function handleTelegramUpdate(update){
