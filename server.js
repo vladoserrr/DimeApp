@@ -126,7 +126,7 @@ async function createPurchase(chatId,messageId,userId,type,amount,details){
 }
 async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  const p=store.pending[purchaseId],id=String(userId);
- if(!p||p.userId!==id||p.status!=="created"){await telegramApi("answerCallbackQuery",{callback_query_id:""}).catch(()=>{});return;}
+ if(!p||p.userId!==id||p.status!=="created")return;
  p.status="processing";saveStore();
  const debitRef="dime-shop-debit-"+purchaseId,refundRef="dime-shop-refund-"+purchaseId;let debited=false;
  try{
@@ -148,7 +148,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
    try{await transfer(ownerId,id,p.starCount,refundRef,"Возврат неуспешной покупки DIME");p.status="refunded";saveStore();}
    catch(re){p.status="refund_failed";p.error=re.message;saveStore();console.error("DIME shop refund failed:",re.message);}
   }else{p.status="failed";p.error=e.message;saveStore();}
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ DIME возвращены на твой баланс.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ DIME возвращены на твой баланс.":p.status==="failed"?"Не удалось списать звёзды. Проверь баланс и попробуй ещё раз.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
  }
 }
 async function registerReferral(userId,payload){
