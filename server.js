@@ -128,9 +128,10 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  const p=store.pending[purchaseId],id=String(userId);
  if(!p||p.userId!==id||p.status!=="created"){await telegramApi("answerCallbackQuery",{callback_query_id:""}).catch(()=>{});return;}
  p.status="processing";saveStore();
- const debitRef="dime-shop-debit-"+purchaseId,refundRef="dime-shop-refund-"+purchaseId;
+ const debitRef="dime-shop-debit-"+purchaseId,refundRef="dime-shop-refund-"+purchaseId;let debited=false;
  try{
-  await transfer(id,ownerId,p.starCount,debitRef,"Покупка "+(p.type==="premium"?"Telegram Premium":p.name||"подарка"));
+  if(!ownerId)throw Error("Не задан CASINO_OWNER_TELEGRAM_ID");
+  await transfer(id,ownerId,p.starCount,debitRef,"Покупка "+(p.type==="premium"?"Telegram Premium":p.name||"подарка"));debited=true;
   if(p.type==="gift"){
    await telegramApi("sendGift",{user_id:Number(id),gift_id:p.giftId,text:"Подарок от DIME CASINO"});
   }else if(p.type==="premium"){
@@ -143,10 +144,10 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎉 Покупка успешно выполнена!\n\n"+(p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев) отправлен.":"Подарок отправлен в твой Telegram.")+"\nСписано: "+p.starCount+" ⭐️ DIME.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
  }catch(e){
   console.error("DIME shop purchase failed:",e.message);
-  if(p.status==="processing"){
+  if(debited){
    try{await transfer(ownerId,id,p.starCount,refundRef,"Возврат неуспешной покупки DIME");p.status="refunded";saveStore();}
    catch(re){p.status="refund_failed";p.error=re.message;saveStore();console.error("DIME shop refund failed:",re.message);}
-  }
+  }else{p.status="failed";p.error=e.message;saveStore();}
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ DIME возвращены на твой баланс.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
  }
 }
