@@ -104,11 +104,13 @@ async function beginGiftPurchase(chatId,messageId,userId,index,page){
  await telegramApi("sendInvoice",{chat_id:chatId,title:giftTitle(g).slice(0,32),description:"Подарок Telegram для вашего аккаунта",payload,currency:"XTR",prices:[{label:giftTitle(g),amount:Number(g.star_count)}]});
 }
 async function registerReferral(userId,payload){
- const id=String(userId);let u=store.users[id];if(!u){u=store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()};}
- const match=/^invite_(\d+)$/.exec(payload||"");if(!match||u.referrer||match[1]===id)return;
+ const id=String(userId),isNew=!store.users[id];if(!isNew)return;
+ const u=store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()};
+ const match=/^invite_(\\d+)$/.exec(payload||"");if(!match||match[1]===id)return;
  const ref=match[1],owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
  if(owner.referrals.includes(id))return;
- try{await transfer(ownerId,ref,2,"dime-referral-"+id,"Награда за приглашение DIME");owner.referrals.push(id);owner.earned=(Number(owner.earned)||0)+2;u.referrer=ref;saveStore();}catch(e){console.error("Referral reward failed:",e.message);}
+ try{await transfer(ownerId,ref,2,"dime-referral-"+id,"Награда за приглашение DIME");owner.referrals.push(id);owner.earned=(Number(owner.earned)||0)+2;u.referrer=ref;saveStore();}
+ catch(e){console.error("Referral reward failed:",e.message);}
 }
 async function handlePromoMessage(msg){
  const id=String(msg.from.id),code=String(msg.text||"").trim().replace(/^\/promo\s*/i,"").toUpperCase();
