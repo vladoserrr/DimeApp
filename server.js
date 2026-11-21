@@ -60,7 +60,7 @@ async function handleTelegramUpdate(update){
  const msg=update?.message;
  if(!msg?.chat?.id||typeof msg.text!=="string")return;
  const chatId=msg.chat.id,text=msg.text.trim();
- if(/^\/start(?:@\w+)?(?:\\s|$)/i.test(text)){await sendBotMenu(chatId);return;}
+ if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)){await sendBotMenu(chatId);return;}
  if(text==="Пригласить друга"){
   if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
   const link="https://t.me/"+botUsername+"?start=invite_"+msg.from.id;
