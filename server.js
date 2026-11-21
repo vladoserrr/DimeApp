@@ -5,7 +5,7 @@ const games=[
 ];
 const token=process.env.TELEGRAM_BOT_TOKEN,key=process.env.DONUT_API_KEY,base=(process.env.DONUT_API_URL||"").replace(/\/+$/,""),ownerId=String(process.env.CASINO_OWNER_TELEGRAM_ID||"");
 function verify(data){try{if(!token||!data)return null;const p=new URLSearchParams(data),h=p.get("hash");p.delete("hash");const str=[...p.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>k+"="+v).join("\n"),secret=crypto.createHmac("sha256","WebAppData").update(token).digest(),v=crypto.createHmac("sha256",secret).update(str).digest("hex"),a=Buffer.from(h||"","hex"),b=Buffer.from(v,"hex");if(!h||a.length!==b.length||!crypto.timingSafeEqual(a,b)||Date.now()/1000-Number(p.get("auth_date"))>86400)return null;return JSON.parse(p.get("user")||"{}");}catch{return null}}
-function auth(req,res,next){req.u=verify(req.headers["x-telegram-init-data"]);if(!req.u?.id)return res.status(401).json({error:"Открой казино через Telegram"});next()}
+function auth(req,res,next){req.u=verify(req.headers["x-telegram-init-data"]);if(!req.u?.id)return res.status(401).json({error:"Открой казино через Telegram"});if(store?.blocked?.[String(req.u.id)])return res.status(403).json({error:"Доступ к аккаунту ограничен"});next()}
 async function api(path,method="GET",body,ref){if(!key||!base)throw Error("Не настроены DONUT_API_URL и DONUT_API_KEY");const r=await fetch(base+path,{method,headers:{Authorization:"Bearer "+key,"Content-Type":"application/json","X-Idempotency-Key":ref||crypto.randomUUID()},body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||"Ошибка API Пончика");return d}
 const balance=id=>api("/api/v1/balance?telegram_id="+encodeURIComponent(id));
 async function transfer(from,to,amount,reference,description){return api("/api/v1/transfer","POST",{from_telegram_id:String(from),to_telegram_id:String(to),amount,reference,description},reference)}
@@ -61,7 +61,7 @@ const ADMIN_USERNAME="vladubrat7";
 function isAdmin(from){return String(from?.username||"").toLowerCase()===ADMIN_USERNAME&&String(from?.id||"")===ownerId&&!!ownerId;}
 function rememberTelegramUser(from){
  if(!from?.id)return;
- const id=String(from.id),u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ const id=String(from.id),u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now(),firstSeenByMessage:true});
  u.username=from.username||u.username||"";u.firstName=from.first_name||u.firstName||"";u.lastName=from.last_name||u.lastName||"";
  saveStore();
 }
@@ -120,7 +120,7 @@ async function notifyAdminPurchase(userId,user,type,p){
  const full=[user?.first_name,user?.last_name].filter(Boolean).join(" ")||"Имя не указано";
  const item=type==="premium"?"Telegram Premium · "+p.months+" месяца(ев)":(p.name||"Telegram-подарок");
  const message="✅ УСПЕШНАЯ ПОКУПКА DIME\n\nПользователь: "+full+"\nUsername: "+username+"\nTelegram ID: "+userId+"\nПокупка: "+item+"\nСписано: "+p.starCount+" ⭐️ DIME";
- await telegramApi("sendMessage",{chat_id:Number(ownerId),text:message});
+ try{await telegramApi("sendMessage",{chat_id:Number(ownerId),text:message});}catch(e){console.error("Purchase admin notification failed:",e.message);}
 }
 async function getGifts(){
  if(giftCache&&Date.now()-giftCacheAt<30000)return giftCache;
@@ -218,8 +218,8 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  }
 }
 async function registerReferral(userId,payload){
- const id=String(userId),isNew=!store.users[id];if(!isNew)return;
- const u=store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()};
+ const id=String(userId),existing=store.users[id],isNew=!existing||!!existing.firstSeenByMessage;if(!isNew)return;
+ const u=existing||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});u.registered=true;delete u.firstSeenByMessage;
  const match=/^invite_(\d+)$/.exec(payload||"");if(!match||match[1]===id)return;
  const ref=match[1],owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
  if(owner.referrals.includes(id))return;
@@ -264,6 +264,7 @@ async function handleTelegramUpdate(update){
  if(update?.callback_query){
   const cb=update.callback_query,chatId=cb.message?.chat?.id,messageId=cb.message?.message_id,userId=cb.from?.id;
   if(cb.from)rememberTelegramUser(cb.from);
+  if(store.blocked[String(userId)]&&!isAdmin(cb.from)){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Доступ к боту ограничен.",show_alert:true});return;}
   if(!chatId||!messageId||!userId){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
   try{
    if(isAdmin(cb.from)&&cb.data==="adm:home"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showAdminMenu(chatId,messageId);return;}
