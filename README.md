@@ -45,3 +45,9 @@ Admin input formats:
 - Block/unblock: `@username` or numeric Telegram ID.
 
 A Railway Volume mounted at `/app/data` is required to retain the user directory, promo codes, referral data, blocked list and admin state.
+
+
+### Order fulfillment workflow
+Gift and Premium purchases are charged immediately in internal DIME Stars and recorded as `paid_pending_delivery`. The buyer receives an acceptance message naming the selected gift or Premium term and explaining that normal fulfillment takes up to 48 hours. No automatic Telegram gift/Premium delivery is attempted: the owner fulfills the order manually.
+
+The owner receives an order notification with buyer identity, item and amount, plus an **Отправил** inline button. Pressing it marks the order as sent and sends the buyer a Telegram confirmation naming the purchased item. The button is restricted to the configured owner account.
