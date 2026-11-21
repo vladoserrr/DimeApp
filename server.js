@@ -53,31 +53,47 @@ const telegramApi=async(method,payload)=>{
 };
 let botUsername="";
 async function sendBotMenu(chatId){
- const rows=[[{text:"Пригласить друга✅",callback_data:"invite_friends"}]];
- if(channelUrl)rows.push([{text:"Канал | Подарки",url:channelUrl}]);
- await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\nВыбери действие:",reply_markup:{inline_keyboard:rows}});
+ const earn={text:"💰 Заработать",callback_data:"invite_friends"};
+ const channel=channelUrl?{text:"📢 Канал",url:channelUrl}:{text:"📢 Канал",callback_data:"open_channel"};
+ const gift={text:"🎁 Купить подарок",callback_data:"buy_gift"};
+ const profile={text:"👤 Профиль",callback_data:"open_profile"};
+ await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:{inline_keyboard:[[earn,channel],[gift,profile]]}});
 }
 async function showInviteMenu(chatId,messageId,userId){
  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
  const link="https://t.me/"+botUsername+"?start=invite_"+userId;
- const text="👥 ПРИГЛАШАЙ ДРУЗЕЙ\n\nТвоя персональная ссылка:\n"+link+"\n\n🎁 Получай по 2 ⭐️ за каждого приглашённого друга!\n\nОтправь ссылку друзьям — пусть присоединяются к DIME CASINO.";
+ const text="💰 ЗАРАБОТАТЬ НА ПРИГЛАШЕНИЯХ\n\nТвоя персональная ссылка:\n"+link+"\n\n🎁 Получай по 2 ⭐️ за каждого приглашённого друга!\n\nОтправь ссылку друзьям, чтобы пригласить их.";
  const markup={inline_keyboard:[
   [{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Присоединяйся к DIME CASINO!") }],
-  [{text:"⬅️ Назад в меню",callback_data:"main_menu"}]
+  [{text:"⬅️ Назад",callback_data:"main_menu"}]
  ]};
  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:markup});
 }
 async function handleTelegramUpdate(update){
  if(update?.callback_query){
   const cb=update.callback_query,chatId=cb.message?.chat?.id,messageId=cb.message?.message_id,userId=cb.from?.id;
-  await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
-  if(!chatId||!messageId||!userId)return;
-  if(cb.data==="invite_friends"){await showInviteMenu(chatId,messageId,userId);return;}
-  if(cb.data==="main_menu"){
-   const rows=[[{text:"Пригласить друга✅",callback_data:"invite_friends"}]];
-   if(channelUrl)rows.push([{text:"Канал | Подарки",url:channelUrl}]);
-   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\nВыбери действие:",reply_markup:{inline_keyboard:rows}});
+  if(!chatId||!messageId||!userId){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
+  if(cb.data==="invite_friends"){
+   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+   await showInviteMenu(chatId,messageId,userId);return;
   }
+  if(cb.data==="main_menu"){
+   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+   const earn={text:"💰 Заработать",callback_data:"invite_friends"};
+   const channel=channelUrl?{text:"📢 Канал",url:channelUrl}:{text:"📢 Канал",callback_data:"open_channel"};
+   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:{inline_keyboard:[[earn,channel],[{text:"🎁 Купить подарок",callback_data:"buy_gift"},{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+   return;
+  }
+  if(cb.data==="open_channel"){
+   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:channelUrl?"Открываю канал":"Канал пока не настроен",show_alert:!channelUrl});
+   if(channelUrl)await telegramApi("sendMessage",{chat_id:chatId,text:"Канал DIME CASINO:",reply_markup:{inline_keyboard:[[{text:"Открыть канал",url:channelUrl}]]}});
+   return;
+  }
+  if(cb.data==="buy_gift"||cb.data==="open_profile"){
+   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:cb.data==="buy_gift"?"Раздел покупки подарков пока не подключён.":"Раздел профиля пока не подключён.",show_alert:true});
+   return;
+  }
+  await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
   return;
  }
  const msg=update?.message;
