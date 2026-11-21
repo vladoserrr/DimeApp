@@ -66,7 +66,8 @@ async function getGifts(){
 function giftTitle(g){return (g.sticker?.emoji||"🎁")+" Подарок";}
 function mainMarkup(){return {inline_keyboard:[
  [{text:"💰 Заработать",callback_data:"invite_friends"},{text:"📢 Канал",url:channelUrl}],
- [{text:"🎁 Купить подарок",callback_data:"gift_page:0"},{text:"👤 Профиль",callback_data:"open_profile"}]
+ [{text:"🎁 Купить подарок",callback_data:"gift_page:0"},{text:"👤 Профиль",callback_data:"open_profile"}],
+ [{text:"⭐ Купить премиум",callback_data:"premium_menu"},{text:"💎 Купить NFT",callback_data:"nft_unavailable"}]
  ]};}
 async function sendBotMenu(chatId){
  await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});
@@ -98,10 +99,56 @@ async function showGiftPage(chatId,messageId,page=0){
 async function beginGiftPurchase(chatId,messageId,userId,index,page){
  const gifts=await getGifts(),g=gifts[Number(index)];
  if(!g){await showGiftPage(chatId,messageId,page);return;}
- const payload="dimegift:"+userId+":"+crypto.randomBytes(8).toString("hex");
- store.pending[payload]={userId:String(userId),giftId:g.id,starCount:Number(g.star_count),name:giftTitle(g),createdAt:Date.now()};saveStore();
- await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎁 Выбран подарок: "+giftTitle(g)+"\nЦена: "+g.star_count+" ⭐️\n\nСейчас отправлю защищённый счёт Telegram. Оплата проходит в Telegram Stars.",reply_markup:{inline_keyboard:[[{text:"⬅️ К подаркам",callback_data:"gift_page:"+page}],[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
- await telegramApi("sendInvoice",{chat_id:chatId,title:giftTitle(g).slice(0,32),description:"Подарок Telegram для вашего аккаунта",payload,currency:"XTR",prices:[{label:giftTitle(g),amount:Number(g.star_count)}]});
+ const purchaseId=crypto.randomBytes(10).toString("hex");
+ store.pending[purchaseId]={type:"gift",userId:String(userId),giftId:g.id,starCount:Number(g.star_count),name:giftTitle(g),page:Number(page)||0,status:"created",createdAt:Date.now()};saveStore();
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎁 "+giftTitle(g)+"\n\nСтоимость: "+g.star_count+" ⭐️ DIME\n\nОплатить внутренними звёздами DIME?",reply_markup:{inline_keyboard:[
+  [{text:"Оплатить "+g.star_count+" ⭐️",callback_data:"purchase_confirm:"+purchaseId}],
+  [{text:"⬅️ К подаркам",callback_data:"gift_page:"+page}],
+  [{text:"⬅️ Главное меню",callback_data:"main_menu"}]
+ ]}});
+}
+async function showPremiumMenu(chatId,messageId){
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"⭐ TELEGRAM PREMIUM\n\nВыбери срок подписки. Оплата внутренними звёздами DIME.",reply_markup:{inline_keyboard:[
+  [{text:"3 месяца · 1000 ⭐️",callback_data:"premium_buy:3:1000"}],
+  [{text:"6 месяцев · 1500 ⭐️",callback_data:"premium_buy:6:1500"}],
+  [{text:"⬅️ Назад",callback_data:"main_menu"}]
+ ]}});
+}
+async function createPurchase(chatId,messageId,userId,type,amount,details){
+ const purchaseId=crypto.randomBytes(10).toString("hex");
+ store.pending[purchaseId]={type,userId:String(userId),starCount:amount,...details,status:"created",createdAt:Date.now()};saveStore();
+ const title=type==="premium"?(details.months+" месяца Premium"):(details.name||"Подарок");
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Покупка: "+title+"\nСтоимость: "+amount+" ⭐️ DIME\n\nПодтвердить списание с твоего баланса?",reply_markup:{inline_keyboard:[
+  [{text:"Подтвердить · "+amount+" ⭐️",callback_data:"purchase_confirm:"+purchaseId}],
+  [{text:"⬅️ Назад",callback_data:type==="gift"?"gift_page:"+(details.page||0):"premium_menu"}],
+  [{text:"⬅️ Главное меню",callback_data:"main_menu"}]
+ ]}});
+}
+async function processInternalPurchase(chatId,messageId,userId,purchaseId){
+ const p=store.pending[purchaseId],id=String(userId);
+ if(!p||p.userId!==id||p.status!=="created"){await telegramApi("answerCallbackQuery",{callback_query_id:""}).catch(()=>{});return;}
+ p.status="processing";saveStore();
+ const debitRef="dime-shop-debit-"+purchaseId,refundRef="dime-shop-refund-"+purchaseId;
+ try{
+  await transfer(id,ownerId,p.starCount,debitRef,"Покупка "+(p.type==="premium"?"Telegram Premium":p.name||"подарка"));
+  if(p.type==="gift"){
+   await telegramApi("sendGift",{user_id:Number(id),gift_id:p.giftId,text:"Подарок от DIME CASINO"});
+  }else if(p.type==="premium"){
+   await telegramApi("giftPremiumSubscription",{user_id:Number(id),month_count:p.months,star_count:p.starCount,text:"Telegram Premium от DIME CASINO"});
+  }else throw Error("Неизвестный тип покупки");
+  p.status="completed";p.completedAt=Date.now();
+  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+  if(p.type==="gift")u.gifts=(Number(u.gifts)||0)+1;
+  saveStore();
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎉 Покупка успешно выполнена!\n\n"+(p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев) отправлен.":"Подарок отправлен в твой Telegram.")+"\nСписано: "+p.starCount+" ⭐️ DIME.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+ }catch(e){
+  console.error("DIME shop purchase failed:",e.message);
+  if(p.status==="processing"){
+   try{await transfer(ownerId,id,p.starCount,refundRef,"Возврат неуспешной покупки DIME");p.status="refunded";saveStore();}
+   catch(re){p.status="refund_failed";p.error=re.message;saveStore();console.error("DIME shop refund failed:",re.message);}
+  }
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ DIME возвращены на твой баланс.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+ }
 }
 async function registerReferral(userId,payload){
  const id=String(userId),isNew=!store.users[id];if(!isNew)return;
@@ -152,6 +199,10 @@ async function handleTelegramUpdate(update){
   try{
    if(cb.data==="invite_friends"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showInviteMenu(chatId,messageId,userId);return;}
    if(cb.data==="open_profile"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showProfile(chatId,messageId,userId);return;}
+   if(cb.data==="premium_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showPremiumMenu(chatId,messageId);return;}
+   if(cb.data==="nft_unavailable"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"NFT пока недоступны.",show_alert:true});return;}
+   if(cb.data.startsWith("premium_buy:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const [,months,amount]=cb.data.split(":");await createPurchase(chatId,messageId,userId,"premium",Number(amount),{months:Number(months)});return;}
+   if(cb.data.startsWith("purchase_confirm:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Обрабатываю покупку…"});await processInternalPurchase(chatId,messageId,userId,cb.data.split(":")[1]);return;}
    if(cb.data==="promo_enter"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Отправь промокод сообщением в этот чат."});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎟 ПРОМОКОД\n\nОтправь промокод следующим сообщением, чтобы активировать его.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад в профиль",callback_data:"open_profile"}]]}});store.users[String(userId)]=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,joinedAt:Date.now()};store.users[String(userId)].awaitingPromo=true;saveStore();return;}
    if(cb.data==="main_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});return;}
    if(cb.data==="gift_noop"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
