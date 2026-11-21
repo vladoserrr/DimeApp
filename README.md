@@ -32,3 +32,16 @@ Referral counts, promo redemptions, gift purchase counts and pending orders are 
 - `TELEGRAM_BOT_TOKEN`
 - `DONUT_API_URL`, `DONUT_API_KEY`, `CASINO_OWNER_TELEGRAM_ID`
 - Railway Volume mounted at `/app/data`
+
+
+### Owner notifications and admin panel
+After a gift or Premium order is successfully delivered, the bot sends a private notification to the configured owner chat (`CASINO_OWNER_TELEGRAM_ID`) with the buyer's name, username, Telegram ID, purchased item and DIME amount.
+
+The private admin command is `/admin2005`. Access requires BOTH Telegram username `@vladubrat7` and the matching numeric `CASINO_OWNER_TELEGRAM_ID`. The panel supports user balance debit/credit, broadcast to registered bot users, promo creation, and user block/unblock. Balance actions and block/unblock accept a numeric Telegram ID or a username previously seen by the bot. Broadcast skips blocked accounts.
+
+Admin input formats:
+- Debit/credit: `@username 250` or `123456789 250`.
+- Promo: `CODE AMOUNT LIMIT` (limit 0 means unlimited).
+- Block/unblock: `@username` or numeric Telegram ID.
+
+A Railway Volume mounted at `/app/data` is required to retain the user directory, promo codes, referral data, blocked list and admin state.
