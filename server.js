@@ -41,4 +41,61 @@ function roll(game,choice,bet,extra={}){
  return {win,payout:win?money(bet*mult):0,multiplier:win?mult:0,detail,visual};
 }
 app.post("/api/play",auth,async(q,s)=>{const id=String(q.u.id),bet=money(q.body.bet),game=String(q.body.game||"");if(!games.some(g=>g[0]===game)||!Number.isSafeInteger(bet)||bet<1||bet>10000)return s.status(400).json({error:"Ставка от 1 до 10000 фрагментов"});if(!ownerId)return s.status(503).json({error:"Не настроен CASINO_OWNER_TELEGRAM_ID"});if(busy.has(id))return s.status(409).json({error:"Предыдущий раунд ещё обрабатывается"});busy.add(id);const ref=crypto.randomUUID();try{const owner=await balance(ownerId),player=await balance(id);if(player.balance<bet)return s.status(409).json({error:"Недостаточно фрагментов",balance:player.balance});const preview=roll(game,q.body.choice,bet,q.body);const maxMult={slots:7,keno:25,roulette:8.5,wheel:12,lottery:8.5,diamonds:2.85,football:2.75,plinko:12,baccarat:7.5}[game]||10;if(owner.balance<bet*(game==="limbo"?Math.max(1.1,Math.min(20,Number(q.body.target)||2)):maxMult))return s.status(409).json({error:"В резерве казино недостаточно средств для этого режима"});await transfer(id,ownerId,bet,"dime-bet-"+ref,"Ставка Dime · "+game);if(preview.payout>0){try{await transfer(ownerId,id,preview.payout,"dime-win-"+ref,"Выплата Dime · "+game);}catch(e){await transfer(ownerId,id,bet,"dime-refund-"+ref,"Возврат ставки Dime");throw Error("Не удалось выплатить выигрыш. Ставка возвращена. "+e.message)}}const fresh=await balance(id);return s.json({ok:true,game,bet,balance:fresh.balance,...preview,result:preview.win?"Победа":"Раунд завершён"});}catch(e){s.status(502).json({error:"Раунд не завершён: "+e.message})}finally{busy.delete(id)}});
+
+const channelUrl=String(process.env.DIME_CHANNEL_URL||"").trim();
+const webhookSecret=String(process.env.TELEGRAM_WEBHOOK_SECRET||"").trim();
+const telegramApi=async(method,payload)=>{
+ if(!token)throw Error("TELEGRAM_BOT_TOKEN не задан");
+ const r=await fetch("https://api.telegram.org/bot"+token+"/"+method,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+ const d=await r.json().catch(()=>({}));
+ if(!r.ok||!d.ok)throw Error(d.description||"Telegram API error");
+ return d.result;
+};
+let botUsername="";
+async function sendBotMenu(chatId){
+ const keyboard={keyboard:[[{text:"Пригласить друга"}],[{text:"Канал | Подарки"}]],resize_keyboard:true,is_persistent:true};
+ await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO. Выбери действие в меню ниже.",reply_markup:keyboard});
+}
+async function handleTelegramUpdate(update){
+ const msg=update?.message;
+ if(!msg?.chat?.id||typeof msg.text!=="string")return;
+ const chatId=msg.chat.id,text=msg.text.trim();
+ if(/^\/start(?:@\\w+)?(?:\\s|$)/i.test(text)){await sendBotMenu(chatId);return;}
+ if(text==="Пригласить друга"){
+  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
+  const link="https://t.me/"+botUsername+"?start=invite_"+msg.from.id;
+  await telegramApi("sendMessage",{chat_id:chatId,text:"Приглашай друзей в DIME CASINO по своей ссылке:\n"+link+"\n\nОтправь её друзьям, чтобы они открыли бота.",reply_markup:{inline_keyboard:[[{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Заходи в DIME CASINO!") }]]}});
+  return;
+ }
+ if(text==="Канал | Подарки"){
+  if(!channelUrl){
+   await telegramApi("sendMessage",{chat_id:chatId,text:"Ссылка на канал пока не настроена. Администратору нужно добавить DIME_CHANNEL_URL в Variables проекта DimeApp."});
+   return;
+  }
+  await telegramApi("sendMessage",{chat_id:chatId,text:"Канал DIME CASINO — новости, подарки и бонусы.",reply_markup:{inline_keyboard:[[{text:"Открыть канал",url:channelUrl}]]}});
+ }
+}
+app.post("/telegram/webhook",async(req,res)=>{
+ try{
+  if(webhookSecret&&req.get("x-telegram-bot-api-secret-token")!==webhookSecret)return res.sendStatus(403);
+  await handleTelegramUpdate(req.body);
+  res.sendStatus(200);
+ }catch(e){console.error("Telegram webhook:",e.message);res.sendStatus(200);}
+});
+async function configureTelegramWebhook(){
+ if(!token)return;
+ try{
+  const me=await telegramApi("getMe",{});
+  botUsername=me.username||"";
+  const host=String(process.env.RAILWAY_PUBLIC_DOMAIN||"").trim();
+  const webhook=String(process.env.TELEGRAM_WEBHOOK_URL||(host?"https://"+host+"/telegram/webhook":"")).trim();
+  if(!webhook){console.log("Telegram bot: set TELEGRAM_WEBHOOK_URL or RAILWAY_PUBLIC_DOMAIN to enable /start menu");return;}
+  const payload={url:webhook,allowed_updates:["message"]};
+  if(webhookSecret)payload.secret_token=webhookSecret;
+  await telegramApi("setWebhook",payload);
+  console.log("Telegram webhook configured for @"+botUsername);
+ }catch(e){console.error("Telegram webhook setup failed:",e.message);}
+}
+configureTelegramWebhook();
+
 app.listen(process.env.PORT||8080,()=>console.log("Dime Casino online"));
