@@ -116,7 +116,7 @@ async function configureTelegramWebhook(){
   const host=String(process.env.RAILWAY_PUBLIC_DOMAIN||"").trim();
   const webhook=String(process.env.TELEGRAM_WEBHOOK_URL||(host?"https://"+host+"/telegram/webhook":"")).trim();
   if(!webhook){console.log("Telegram bot: set TELEGRAM_WEBHOOK_URL or RAILWAY_PUBLIC_DOMAIN to enable /start menu");return;}
-  const payload={url:webhook,allowed_updates:["message"]};
+  const payload={url:webhook,allowed_updates:["message","callback_query"]};
   if(webhookSecret)payload.secret_token=webhookSecret;
   await telegramApi("setWebhook",payload);
   console.log("Telegram webhook configured for @"+botUsername);
