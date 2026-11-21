@@ -197,30 +197,48 @@ async function createPurchase(chatId,messageId,userId,type,amount,details){
   [{text:"⬅️ Главное меню",callback_data:"main_menu"}]
  ]}});
 }
+const purchaseBusy=new Set();
 async function processInternalPurchase(chatId,messageId,userId,purchaseId){
- const p=store.pending[purchaseId],id=String(userId);
- if(!p||p.userId!==id||p.status!=="created")return;
- p.status="processing";saveStore();
- const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0});let debited=false;
+ const p=store.pending[purchaseId],id=String(userId),lock=String(purchaseId);
+ if(!p||p.userId!==id){
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"❌ Заказ не найден или создан другим пользователем. Открой покупку заново.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+  return;
+ }
+ if(p.status!=="created"||purchaseBusy.has(lock)){
+  await telegramApi("answerCallbackQuery",{callback_query_id:undefined,text:"Эта покупка уже обрабатывается или завершена."}).catch(()=>{});
+  return;
+ }
+ purchaseBusy.add(lock);
+ const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0});
+ const amount=Number(p.starCount);
+ let debited=false;
  try{
-  u.balance=Number(u.balance)||0;
-  if(u.balance<p.starCount)throw Error("Недостаточно звёзд на внутреннем балансе бота");
-  u.balance-=p.starCount;debited=true;saveStore();
-  if(p.type!=="gift"&&p.type!=="premium")throw Error("Неизвестный тип покупки");
+  if(p.type!=="gift"&&p.type!=="premium")throw Error("Неизвестный тип покупки: "+String(p.type));
+  if(!Number.isSafeInteger(amount)||amount<1)throw Error("В заказе указана некорректная стоимость: "+String(p.starCount));
+  const current=Number(u.balance);
+  if(!Number.isFinite(current)||current<0)throw Error("Внутренний баланс пользователя повреждён: "+String(u.balance));
+  if(current<amount)throw Error("Недостаточно средств. На балансе: "+current+" ⭐️, требуется: "+amount+" ⭐️.");
+  p.status="processing";p.processingAt=Date.now();saveStore();
+  u.balance=current-amount;debited=true;
   p.status="paid_pending_delivery";p.paidAt=Date.now();p.deliveryNotified=false;
-  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
   if(p.type==="gift")u.gifts=(Number(u.gifts)||0)+1;
   saveStore();
   await notifyAdminPurchase(id,{username:u.username,first_name:u.firstName,last_name:u.lastName},p.type,p);
-  const purchaseName=p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев)":(p.name||"выбранный подарок");
-  try{await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+p.starCount+" ⭐️.\n\nОбычно отправка занимает до 48 часов. Когда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});}catch(notifyError){console.error("Buyer purchase confirmation failed:",notifyError.message);}
+  const purchaseName=p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев)":(p.name||"Telegram-подарок");
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+amount+" ⭐️.\nОстаток: "+u.balance+" ⭐️.\n\nКогда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
  }catch(e){
-  console.error("Shop purchase failed:",e.message);
+  const reason=String(e?.message||e||"Неизвестная ошибка");
+  console.error("Shop purchase failed:",{purchaseId,id,type:p.type,amount,balance:u.balance,status:p.status,error:reason});
   if(debited){
-   u.balance=(Number(u.balance)||0)+Number(p.starCount||0);p.status="refunded";saveStore();
-  }else{p.status="failed";p.error=e.message;saveStore();}
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:p.status==="refunded"?"Не удалось выполнить покупку. ⭐️ возвращены на твой баланс.":p.status==="failed"?"Не удалось списать звёзды. Проверь баланс и попробуй ещё раз.":"Покупка не выполнена. Не удалось подтвердить возврат автоматически — обратись в поддержку.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
- }
+   u.balance=(Number(u.balance)||0)+amount;
+   if(p.type==="gift")u.gifts=Math.max(0,(Number(u.gifts)||0)-1);
+   p.status="refunded";p.error=reason;saveStore();
+  }else{
+   p.status="failed";p.error=reason;saveStore();
+  }
+  const balanceText="\nТекущий баланс: "+(Number(u.balance)||0)+" ⭐️.";
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"❌ Не удалось завершить покупку.\n\nПричина: "+reason+(p.status==="refunded"?"\nСписанные звёзды возвращены.":"")+balanceText,reply_markup:{inline_keyboard:[[{text:"⬅️ Повторить покупку",callback_data:p.type==="premium"?"premium_menu":"gift_page:"+(p.page||0)}],[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+ }finally{purchaseBusy.delete(lock);}
 }
 const referralBusy=new Set();
 async function registerReferral(userId,payload){
