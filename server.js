@@ -1,4 +1,4 @@
-const express=require("express"),crypto=require("crypto"),path=require("path");
+const express=require("express"),crypto=require("crypto"),path=require("path"),fs=require("fs");
 const app=express();app.use(express.json({limit:"20kb"}));app.use(express.static(path.join(__dirname,"public")));
 const games=[
 ["dice","Кости","Выбери диапазон: 1–3 или 4–6."],["coin","Монетка","Угадай сторону монеты."],["roulette","Рулетка","Выбери цвет сектора."],["slots","Слоты","Собери одинаковые символы."],["mines","Мины","Выбери уровень риска и проверь поле."],["crash","Краш","Забери выплату до точки обвала."],["limbo","Лимбо","Задай множитель и превзойди его."],["plinko","Плинко","Выбери риск и получи множитель ячейки."],["hilo","Выше / Ниже","Угадай значение следующей карты."],["keno","Кено","Выбери числа и дождись тиража."],["baccarat","Баккара","Выбери победителя раздачи."],["blackjack","Блэкджек","Выбери действие: взять карту или остановиться."],["poker","Покер","Сравни старшую карту с дилером."],["wheel","Колесо","Выбери цвет сектора колеса."],["tower","Башня","Выбери высоту подъёма."],["stairs","Лестница","Выбери количество ступеней."],["diamonds","Алмазы","Выбери один из трёх камней."],["football","Футбол","Выбери направление удара."],["basketball","Баскетбол","Выбери дальность броска."],["lottery","Лотерея","Угадай цифру от 0 до 9."]
@@ -42,8 +42,13 @@ function roll(game,choice,bet,extra={}){
 }
 app.post("/api/play",auth,async(q,s)=>{const id=String(q.u.id),bet=money(q.body.bet),game=String(q.body.game||"");if(!games.some(g=>g[0]===game)||!Number.isSafeInteger(bet)||bet<1||bet>10000)return s.status(400).json({error:"Ставка от 1 до 10000 фрагментов"});if(!ownerId)return s.status(503).json({error:"Не настроен CASINO_OWNER_TELEGRAM_ID"});if(busy.has(id))return s.status(409).json({error:"Предыдущий раунд ещё обрабатывается"});busy.add(id);const ref=crypto.randomUUID();try{const owner=await balance(ownerId),player=await balance(id);if(player.balance<bet)return s.status(409).json({error:"Недостаточно фрагментов",balance:player.balance});const preview=roll(game,q.body.choice,bet,q.body);const maxMult={slots:7,keno:25,roulette:8.5,wheel:12,lottery:8.5,diamonds:2.85,football:2.75,plinko:12,baccarat:7.5}[game]||10;if(owner.balance<bet*(game==="limbo"?Math.max(1.1,Math.min(20,Number(q.body.target)||2)):maxMult))return s.status(409).json({error:"В резерве казино недостаточно средств для этого режима"});await transfer(id,ownerId,bet,"dime-bet-"+ref,"Ставка Dime · "+game);if(preview.payout>0){try{await transfer(ownerId,id,preview.payout,"dime-win-"+ref,"Выплата Dime · "+game);}catch(e){await transfer(ownerId,id,bet,"dime-refund-"+ref,"Возврат ставки Dime");throw Error("Не удалось выплатить выигрыш. Ставка возвращена. "+e.message)}}const fresh=await balance(id);return s.json({ok:true,game,bet,balance:fresh.balance,...preview,result:preview.win?"Победа":"Раунд завершён"});}catch(e){s.status(502).json({error:"Раунд не завершён: "+e.message})}finally{busy.delete(id)}});
 
-const channelUrl=String(process.env.DIME_CHANNEL_URL||"").trim();
+const channelUrl="https://t.me/+cB3iJtgVuoBjZjBi";
 const webhookSecret=String(process.env.TELEGRAM_WEBHOOK_SECRET||"").trim();
+const dataDir=process.env.DIME_DATA_DIR||path.join(__dirname,"data");
+const dataFile=path.join(dataDir,"telegram-store.json");
+function readStore(){try{return JSON.parse(fs.readFileSync(dataFile,"utf8"));}catch{return {users:{},promos:{},pending:{}};}}
+let store=readStore();
+function saveStore(){fs.mkdirSync(dataDir,{recursive:true});const tmp=dataFile+".tmp";fs.writeFileSync(tmp,JSON.stringify(store));fs.renameSync(tmp,dataFile);}
 const telegramApi=async(method,payload)=>{
  if(!token)throw Error("TELEGRAM_BOT_TOKEN не задан");
  const r=await fetch("https://api.telegram.org/bot"+token+"/"+method,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -51,75 +56,135 @@ const telegramApi=async(method,payload)=>{
  if(!r.ok||!d.ok)throw Error(d.description||"Telegram API error");
  return d.result;
 };
-let botUsername="";
+let botUsername="",giftCache=null,giftCacheAt=0;
+async function getGifts(){
+ if(giftCache&&Date.now()-giftCacheAt<30000)return giftCache;
+ const result=await telegramApi("getAvailableGifts",{});
+ giftCache=(result.gifts||[]).filter(g=>Number(g.star_count)>0&&(!Number.isFinite(g.remaining_count)||g.remaining_count>0)).sort((a,b)=>a.star_count-b.star_count);
+ giftCacheAt=Date.now();return giftCache;
+}
+function giftTitle(g){return (g.sticker?.emoji||"🎁")+" Подарок";}
+function mainMarkup(){return {inline_keyboard:[
+ [{text:"💰 Заработать",callback_data:"invite_friends"},{text:"📢 Канал",url:channelUrl}],
+ [{text:"🎁 Купить подарок",callback_data:"gift_page:0"},{text:"👤 Профиль",callback_data:"open_profile"}]
+ ]};}
 async function sendBotMenu(chatId){
- const earn={text:"💰 Заработать",callback_data:"invite_friends"};
- const channel=channelUrl?{text:"📢 Канал",url:channelUrl}:{text:"📢 Канал",callback_data:"open_channel"};
- const gift={text:"🎁 Купить подарок",callback_data:"buy_gift"};
- const profile={text:"👤 Профиль",callback_data:"open_profile"};
- await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:{inline_keyboard:[[earn,channel],[gift,profile]]}});
+ await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});
 }
 async function showInviteMenu(chatId,messageId,userId){
  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
  const link="https://t.me/"+botUsername+"?start=invite_"+userId;
  const text="💰 ЗАРАБОТАТЬ НА ПРИГЛАШЕНИЯХ\n\nТвоя персональная ссылка:\n"+link+"\n\n🎁 Получай по 2 ⭐️ за каждого приглашённого друга!\n\nОтправь ссылку друзьям, чтобы пригласить их.";
- const markup={inline_keyboard:[
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:{inline_keyboard:[
   [{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Присоединяйся к DIME CASINO!") }],
   [{text:"⬅️ Назад",callback_data:"main_menu"}]
- ]};
- await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:markup});
+ ]}});
+}
+async function showProfile(chatId,messageId,userId){
+ let b;try{b=await balance(userId);}catch(e){b={balance:0};}
+ const u=store.users[String(userId)]||{referrals:[],earned:0,gifts:0};
+ const text="👤 ТВОЙ ПРОФИЛЬ\n\n⭐ Баланс: "+(Number(b.balance)||0).toLocaleString("ru-RU")+" ⭐️\n👥 Приглашено друзей: "+(u.referrals||[]).length+"\n💰 Заработано звёзд: "+(Number(u.earned)||0)+" ⭐️\n🎁 Куплено подарков: "+(Number(u.gifts)||0);
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:{inline_keyboard:[
+  [{text:"🎟 Промокод",callback_data:"promo_enter"},{text:"⬅️ Назад",callback_data:"main_menu"}]
+ ]}});
+}
+async function showGiftPage(chatId,messageId,page=0){
+ const gifts=await getGifts(),perPage=6,totalPages=Math.max(1,Math.ceil(gifts.length/perPage)),p=Math.max(0,Math.min(totalPages-1,Number(page)||0)),slice=gifts.slice(p*perPage,(p+1)*perPage);
+ if(!gifts.length){await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎁 Сейчас доступных подарков нет.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад",callback_data:"main_menu"}]]}});return;}
+ const rows=[];for(let i=0;i<slice.length;i++){const g=slice[i],idx=p*perPage+i;rows.push([{text:giftTitle(g)+" · "+g.star_count+" ⭐️",callback_data:"gift_buy:"+idx+":"+p}]);}
+ const nav=[];if(p>0)nav.push({text:"←",callback_data:"gift_page:"+(p-1)});nav.push({text:(p+1)+"/"+totalPages,callback_data:"gift_noop"});if(p<totalPages-1)nav.push({text:"→",callback_data:"gift_page:"+(p+1)});if(nav.length)rows.push(nav);rows.push([{text:"⬅️ Назад",callback_data:"main_menu"}]);
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎁 ПОДАРКИ TELEGRAM\n\nВыбери подарок. Цены указаны в Telegram Stars.",reply_markup:{inline_keyboard:rows}});
+}
+async function beginGiftPurchase(chatId,messageId,userId,index,page){
+ const gifts=await getGifts(),g=gifts[Number(index)];
+ if(!g){await showGiftPage(chatId,messageId,page);return;}
+ const payload="dimegift:"+userId+":"+crypto.randomBytes(8).toString("hex");
+ store.pending[payload]={userId:String(userId),giftId:g.id,starCount:Number(g.star_count),name:giftTitle(g),createdAt:Date.now()};saveStore();
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎁 Выбран подарок: "+giftTitle(g)+"\nЦена: "+g.star_count+" ⭐️\n\nСейчас отправлю защищённый счёт Telegram. Оплата проходит в Telegram Stars.",reply_markup:{inline_keyboard:[[{text:"⬅️ К подаркам",callback_data:"gift_page:"+page}],[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+ await telegramApi("sendInvoice",{chat_id:chatId,title:giftTitle(g).slice(0,32),description:"Подарок Telegram для вашего аккаунта",payload,currency:"XTR",prices:[{label:giftTitle(g),amount:Number(g.star_count)}]});
+}
+async function registerReferral(userId,payload){
+ const id=String(userId);let u=store.users[id];if(!u){u=store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()};}
+ const match=/^invite_(\d+)$/.exec(payload||"");if(!match||u.referrer||match[1]===id)return;
+ const ref=match[1],owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ if(owner.referrals.includes(id))return;
+ try{await transfer(ownerId,ref,2,"dime-referral-"+id,"Награда за приглашение DIME");owner.referrals.push(id);owner.earned=(Number(owner.earned)||0)+2;u.referrer=ref;saveStore();}catch(e){console.error("Referral reward failed:",e.message);}
+}
+async function handlePromoMessage(msg){
+ const id=String(msg.from.id),code=String(msg.text||"").trim().replace(/^\/promo\s*/i,"").toUpperCase();
+ if(!code)return;
+ const p=store.promos[code],u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ if(!p||p.active===false)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Промокод не найден или уже отключён."});
+ p.used=p.used||[];if(p.used.includes(id))return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Ты уже активировал этот промокод."});
+ if(p.limit>0&&p.used.length>=p.limit)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Лимит активаций промокода исчерпан."});
+ const amount=Math.floor(Number(p.amount)||0);if(amount<1)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Промокод настроен некорректно."});
+ await transfer(ownerId,id,amount,"dime-promo-"+code+"-"+id,"Промокод "+code);p.used.push(id);saveStore();
+ await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"🎉 Промокод активирован! Начислено "+amount+" ⭐️."});
 }
 async function handleTelegramUpdate(update){
+ if(update?.pre_checkout_query){
+  const q=update.pre_checkout_query,p=store.pending[q.invoice_payload];
+  const valid=p&&String(q.from.id)===p.userId&&Number(q.total_amount)===p.starCount&&q.currency==="XTR";
+  await telegramApi("answerPreCheckoutQuery",{pre_checkout_query_id:q.id,ok:!!valid,...(!valid?{error_message:"Счёт недействителен. Открой каталог подарков и выбери подарок заново."}:{})});return;
+ }
+ const msg=update?.message;
+ if(msg?.successful_payment){
+  const payment=msg.successful_payment,p=store.pending[payment.invoice_payload],id=String(msg.from.id);
+  if(!p||p.userId!==id||payment.currency!=="XTR"||Number(payment.total_amount)!==p.starCount)return;
+  try{
+   await telegramApi("sendGift",{user_id:Number(id),gift_id:p.giftId,text:"Подарок от DIME CASINO"});
+   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});u.gifts=(Number(u.gifts)||0)+1;delete store.pending[payment.invoice_payload];saveStore();
+   await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"🎉 Оплата прошла! Подарок отправлен в твой Telegram-профиль."});
+  }catch(e){
+   console.error("Gift delivery failed:",e.message);
+   try{await telegramApi("refundStarPayment",{user_id:Number(id),telegram_payment_charge_id:payment.telegram_payment_charge_id});}catch(re){console.error("Gift refund failed:",re.message);}
+   delete store.pending[payment.invoice_payload];saveStore();
+   await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Не удалось отправить подарок. Запрос на возврат Telegram Stars отправлен."});
+  }return;
+ }
  if(update?.callback_query){
   const cb=update.callback_query,chatId=cb.message?.chat?.id,messageId=cb.message?.message_id,userId=cb.from?.id;
   if(!chatId||!messageId||!userId){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
-  if(cb.data==="invite_friends"){
+  try{
+   if(cb.data==="invite_friends"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showInviteMenu(chatId,messageId,userId);return;}
+   if(cb.data==="open_profile"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showProfile(chatId,messageId,userId);return;}
+   if(cb.data==="promo_enter"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Отправь промокод сообщением в этот чат."});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎟 ПРОМОКОД\n\nОтправь промокод следующим сообщением, чтобы активировать его.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад в профиль",callback_data:"open_profile"}]]}});store.users[String(userId)]=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,joinedAt:Date.now()};store.users[String(userId)].awaitingPromo=true;saveStore();return;}
+   if(cb.data==="main_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});return;}
+   if(cb.data==="gift_noop"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
+   if(cb.data.startsWith("gift_page:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showGiftPage(chatId,messageId,Number(cb.data.split(":")[1]));return;}
+   if(cb.data.startsWith("gift_buy:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const [,idx,page]=cb.data.split(":");await beginGiftPurchase(chatId,messageId,userId,idx,page);return;}
    await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
-   await showInviteMenu(chatId,messageId,userId);return;
-  }
-  if(cb.data==="main_menu"){
-   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
-   const earn={text:"💰 Заработать",callback_data:"invite_friends"};
-   const channel=channelUrl?{text:"📢 Канал",url:channelUrl}:{text:"📢 Канал",callback_data:"open_channel"};
-   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\n\nВыбери нужный раздел:",reply_markup:{inline_keyboard:[[earn,channel],[{text:"🎁 Купить подарок",callback_data:"buy_gift"},{text:"👤 Профиль",callback_data:"open_profile"}]]}});
-   return;
-  }
-  if(cb.data==="open_channel"){
-   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:channelUrl?"Открываю канал":"Канал пока не настроен",show_alert:!channelUrl});
-   if(channelUrl)await telegramApi("sendMessage",{chat_id:chatId,text:"Канал DIME CASINO:",reply_markup:{inline_keyboard:[[{text:"Открыть канал",url:channelUrl}]]}});
-   return;
-  }
-  if(cb.data==="buy_gift"||cb.data==="open_profile"){
-   await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:cb.data==="buy_gift"?"Раздел покупки подарков пока не подключён.":"Раздел профиля пока не подключён.",show_alert:true});
-   return;
-  }
-  await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+  }catch(e){console.error("Telegram callback:",e.message);await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Не удалось выполнить действие. Попробуй ещё раз.",show_alert:true}).catch(()=>{});}
   return;
  }
- const msg=update?.message;
  if(!msg?.chat?.id||typeof msg.text!=="string")return;
- const chatId=msg.chat.id,text=msg.text.trim();
- if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)){await sendBotMenu(chatId);return;}
+ const chatId=msg.chat.id,text=msg.text.trim(),id=String(msg.from?.id||"");
+ if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)){const payload=text.split(/\s+/)[1]||"";await registerReferral(id,payload);await sendBotMenu(chatId);return;}
+ if(store.users[id]?.awaitingPromo){store.users[id].awaitingPromo=false;saveStore();await handlePromoMessage(msg);return;}
+ if(/^\/promo\s+/i.test(text)){await handlePromoMessage(msg);return;}
+ if(/^\/createpromo\s+/i.test(text)&&id===ownerId){
+  const [,code,amount,limit]=text.split(/\s+/),cleanCode=String(code||"").toUpperCase();
+  if(!/^[A-Z0-9_-]{3,24}$/.test(cleanCode)||Number(amount)<1)return telegramApi("sendMessage",{chat_id:chatId,text:"Формат: /createpromo CODE AMOUNT LIMIT"});
+  store.promos[cleanCode]={amount:Math.floor(Number(amount)),limit:Math.max(0,Math.floor(Number(limit)||0)),used:[],active:true};saveStore();
+  await telegramApi("sendMessage",{chat_id:chatId,text:"Промокод "+cleanCode+" создан. Награда: "+Math.floor(Number(amount))+" ⭐️."});return;
+ }
 }
 app.post("/telegram/webhook",async(req,res)=>{
  try{
   if(webhookSecret&&req.get("x-telegram-bot-api-secret-token")!==webhookSecret)return res.sendStatus(403);
-  await handleTelegramUpdate(req.body);
-  res.sendStatus(200);
+  await handleTelegramUpdate(req.body);res.sendStatus(200);
  }catch(e){console.error("Telegram webhook:",e.message);res.sendStatus(200);}
 });
 async function configureTelegramWebhook(){
  if(!token)return;
  try{
-  const me=await telegramApi("getMe",{});
-  botUsername=me.username||"";
+  const me=await telegramApi("getMe",{});botUsername=me.username||"";
   const host=String(process.env.RAILWAY_PUBLIC_DOMAIN||"").trim();
   const webhook=String(process.env.TELEGRAM_WEBHOOK_URL||(host?"https://"+host+"/telegram/webhook":"")).trim();
   if(!webhook){console.log("Telegram bot: set TELEGRAM_WEBHOOK_URL or RAILWAY_PUBLIC_DOMAIN to enable /start menu");return;}
-  const payload={url:webhook,allowed_updates:["message","callback_query"]};
+  const payload={url:webhook,allowed_updates:["message","callback_query","pre_checkout_query"]};
   if(webhookSecret)payload.secret_token=webhookSecret;
-  await telegramApi("setWebhook",payload);
-  console.log("Telegram webhook configured for @"+botUsername);
+  await telegramApi("setWebhook",payload);console.log("Telegram webhook configured for @"+botUsername);
  }catch(e){console.error("Telegram webhook setup failed:",e.message);}
 }
 configureTelegramWebhook();
