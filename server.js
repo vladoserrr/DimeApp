@@ -47,7 +47,7 @@ const webhookSecret=String(process.env.TELEGRAM_WEBHOOK_SECRET||"").trim();
 const dataDir=process.env.DIME_DATA_DIR||path.join(__dirname,"data");
 const dataFile=path.join(dataDir,"telegram-store.json");
 function readStore(){try{return JSON.parse(fs.readFileSync(dataFile,"utf8"));}catch{return {users:{},promos:{},pending:{}};}}
-let store=readStore();
+let store=readStore();store.users=store.users||{};store.promos=store.promos||{};store.pending=store.pending||{};store.blocked=store.blocked||{};store.adminState=store.adminState||{};
 function saveStore(){fs.mkdirSync(dataDir,{recursive:true});const tmp=dataFile+".tmp";fs.writeFileSync(tmp,JSON.stringify(store));fs.renameSync(tmp,dataFile);}
 const telegramApi=async(method,payload)=>{
  if(!token)throw Error("TELEGRAM_BOT_TOKEN не задан");
@@ -57,6 +57,71 @@ const telegramApi=async(method,payload)=>{
  return d.result;
 };
 let botUsername="",giftCache=null,giftCacheAt=0;
+const ADMIN_USERNAME="vladubrat7";
+function isAdmin(from){return String(from?.username||"").toLowerCase()===ADMIN_USERNAME&&String(from?.id||"")===ownerId&&!!ownerId;}
+function rememberTelegramUser(from){
+ if(!from?.id)return;
+ const id=String(from.id),u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ u.username=from.username||u.username||"";u.firstName=from.first_name||u.firstName||"";u.lastName=from.last_name||u.lastName||"";
+ saveStore();
+}
+function adminKeyboard(){return {inline_keyboard:[
+ [{text:"Снять баланс по юзу",callback_data:"adm:withdraw"},{text:"Начислить баланс по юзу",callback_data:"adm:credit"}],
+ [{text:"Сделать рассылку для пользователей",callback_data:"adm:broadcast"}],
+ [{text:"Создать промокод",callback_data:"adm:promo"}],
+ [{text:"Заблокировать пользователя",callback_data:"adm:block"},{text:"Разблокировать пользователя",callback_data:"adm:unblock"}]
+ ]};}
+async function showAdminMenu(chatId,messageId){
+ const text="🔐 АДМИН-ПАНЕЛЬ\n\nВыбери действие:";
+ if(messageId)await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:adminKeyboard()});
+ else await telegramApi("sendMessage",{chat_id:chatId,text,reply_markup:adminKeyboard()});
+}
+async function askAdminInput(chatId,messageId,adminId,action,prompt){
+ store.adminState[String(adminId)]={action,createdAt:Date.now()};saveStore();
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:prompt+"\n\nОтправь данные следующим сообщением.\nДля отмены: /admin2005",reply_markup:{inline_keyboard:[[{text:"⬅️ В админ-панель",callback_data:"adm:home"}]]}});
+}
+function resolveAdminTarget(input){
+ const q=String(input||"").trim().replace(/^@/,"").toLowerCase();
+ if(/^\d+$/.test(q))return q;
+ for(const [id,u] of Object.entries(store.users))if(String(u.username||"").toLowerCase()===q)return id;
+ return null;
+}
+async function handleAdminInput(msg,action){
+ const chatId=msg.chat.id,adminId=String(msg.from.id),raw=String(msg.text||"").trim();
+ if(action==="withdraw"||action==="credit"){
+  const parts=raw.split(/\s+/),target=resolveAdminTarget(parts[0]),amount=Math.floor(Number(parts[1]));
+  if(!target||!Number.isSafeInteger(amount)||amount<1||amount>1000000){await telegramApi("sendMessage",{chat_id:chatId,text:"Неверный формат. Отправь: ID_или_@username сумма\nНапример: @username 250"});return;}
+  const from=action==="withdraw"?target:ownerId,to=action==="withdraw"?ownerId:target;
+  await transfer(from,to,amount,"admin-"+action+"-"+crypto.randomUUID(),action==="withdraw"?"Списание администратором":"Начисление администратором");
+  await telegramApi("sendMessage",{chat_id:chatId,text:(action==="withdraw"?"Списано ":"Начислено ")+amount+" ⭐️ пользователю "+parts[0]+"."});return;
+ }
+ if(action==="broadcast"){
+  if(!raw){await telegramApi("sendMessage",{chat_id:chatId,text:"Текст рассылки пуст. Отправь текст ещё раз."});return;}
+  let sent=0,failed=0;
+  for(const id of Object.keys(store.users)){if(store.blocked[id])continue;try{await telegramApi("sendMessage",{chat_id:Number(id),text:raw});sent++;}catch(e){failed++;}}
+  await telegramApi("sendMessage",{chat_id:chatId,text:"Рассылка завершена. Отправлено: "+sent+". Не доставлено: "+failed+"."});return;
+ }
+ if(action==="promo"){
+  const [code,amountRaw,limitRaw]=raw.split(/\s+/),clean=String(code||"").toUpperCase(),amount=Math.floor(Number(amountRaw)),limit=Math.max(0,Math.floor(Number(limitRaw)||0));
+  if(!/^[A-Z0-9_-]{3,24}$/.test(clean)||!Number.isSafeInteger(amount)||amount<1){await telegramApi("sendMessage",{chat_id:chatId,text:"Формат: CODE AMOUNT LIMIT\nНапример: BONUS100 100 50\nLIMIT 0 — без ограничения."});return;}
+  store.promos[clean]={amount,limit,used:[],active:true};saveStore();
+  await telegramApi("sendMessage",{chat_id:chatId,text:"Промокод "+clean+" создан. Награда: "+amount+" ⭐️."});return;
+ }
+ if(action==="block"||action==="unblock"){
+  const target=resolveAdminTarget(raw);
+  if(!target){await telegramApi("sendMessage",{chat_id:chatId,text:"Пользователь не найден. Используй Telegram ID или @username пользователя, который уже запускал бота."});return;}
+  if(action==="block")store.blocked[target]=true;else delete store.blocked[target];
+  saveStore();await telegramApi("sendMessage",{chat_id:chatId,text:"Пользователь "+raw+(action==="block"?" заблокирован.":" разблокирован.")});return;
+ }
+}
+async function notifyAdminPurchase(userId,user,type,p){
+ if(!ownerId)return;
+ const username=user?.username?"@"+user.username:"не указан";
+ const full=[user?.first_name,user?.last_name].filter(Boolean).join(" ")||"Имя не указано";
+ const item=type==="premium"?"Telegram Premium · "+p.months+" месяца(ев)":(p.name||"Telegram-подарок");
+ const message="✅ УСПЕШНАЯ ПОКУПКА DIME\n\nПользователь: "+full+"\nUsername: "+username+"\nTelegram ID: "+userId+"\nПокупка: "+item+"\nСписано: "+p.starCount+" ⭐️ DIME";
+ await telegramApi("sendMessage",{chat_id:Number(ownerId),text:message});
+}
 async function getGifts(){
  if(giftCache&&Date.now()-giftCacheAt<30000)return giftCache;
  const result=await telegramApi("getAvailableGifts",{});
@@ -141,6 +206,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
   if(p.type==="gift")u.gifts=(Number(u.gifts)||0)+1;
   saveStore();
+  await notifyAdminPurchase(id,{username:u.username,first_name:u.firstName,last_name:u.lastName},p.type,p);
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎉 Покупка успешно выполнена!\n\n"+(p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев) отправлен.":"Подарок отправлен в твой Telegram.")+"\nСписано: "+p.starCount+" ⭐️ DIME.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
  }catch(e){
   console.error("DIME shop purchase failed:",e.message);
@@ -178,6 +244,7 @@ async function handleTelegramUpdate(update){
   await telegramApi("answerPreCheckoutQuery",{pre_checkout_query_id:q.id,ok:!!valid,...(!valid?{error_message:"Счёт недействителен. Открой каталог подарков и выбери подарок заново."}:{})});return;
  }
  const msg=update?.message;
+ if(msg?.from)rememberTelegramUser(msg.from);
  if(msg?.successful_payment){
   const payment=msg.successful_payment,p=store.pending[payment.invoice_payload],id=String(msg.from.id),charge=payment.telegram_payment_charge_id;
   store.paidCharges=store.paidCharges||{};
@@ -196,8 +263,15 @@ async function handleTelegramUpdate(update){
  }
  if(update?.callback_query){
   const cb=update.callback_query,chatId=cb.message?.chat?.id,messageId=cb.message?.message_id,userId=cb.from?.id;
+  if(cb.from)rememberTelegramUser(cb.from);
   if(!chatId||!messageId||!userId){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
   try{
+   if(isAdmin(cb.from)&&cb.data==="adm:home"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showAdminMenu(chatId,messageId);return;}
+   if(isAdmin(cb.from)&&cb.data.startsWith("adm:")){
+    await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+    const action=cb.data.slice(4),prompts={withdraw:"Укажи пользователя и сумму для списания. Формат: @username 250 или TELEGRAM_ID 250",credit:"Укажи пользователя и сумму для начисления. Формат: @username 250 или TELEGRAM_ID 250",broadcast:"Отправь текст рассылки для всех пользователей бота.",promo:"Создание промокода. Формат: CODE AMOUNT LIMIT (0 — без лимита).",block:"Укажи Telegram ID или @username пользователя для блокировки.",unblock:"Укажи Telegram ID или @username пользователя для разблокировки."};
+    if(prompts[action])await askAdminInput(chatId,messageId,userId,action,prompts[action]);return;
+   }
    if(cb.data==="invite_friends"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showInviteMenu(chatId,messageId,userId);return;}
    if(cb.data==="open_profile"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showProfile(chatId,messageId,userId);return;}
    if(cb.data==="premium_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showPremiumMenu(chatId,messageId);return;}
@@ -215,6 +289,13 @@ async function handleTelegramUpdate(update){
  }
  if(!msg?.chat?.id||typeof msg.text!=="string")return;
  const chatId=msg.chat.id,text=msg.text.trim(),id=String(msg.from?.id||"");
+ if(isAdmin(msg.from)&&text==="/admin2005"){delete store.adminState[id];saveStore();await showAdminMenu(chatId);return;}
+ if(store.blocked[id]&&!isAdmin(msg.from)){await telegramApi("sendMessage",{chat_id:chatId,text:"Доступ к боту ограничен."});return;}
+ if(store.adminState[id]){
+  const action=store.adminState[id].action;delete store.adminState[id];saveStore();
+  try{await handleAdminInput(msg,action);}catch(e){console.error("Admin action:",e.message);await telegramApi("sendMessage",{chat_id:chatId,text:"Не удалось выполнить действие: "+e.message});}
+  await showAdminMenu(chatId);return;
+ }
  if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)){const payload=text.split(/\s+/)[1]||"";await registerReferral(id,payload);await sendBotMenu(chatId);return;}
  if(store.users[id]?.awaitingPromo){store.users[id].awaitingPromo=false;saveStore();await handlePromoMessage(msg);return;}
  if(/^\/promo\s+/i.test(text)){await handlePromoMessage(msg);return;}
