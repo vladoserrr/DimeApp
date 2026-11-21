@@ -61,7 +61,10 @@ const ADMIN_USERNAME="vladubrat7";
 function isAdmin(from){return !!ownerId&&String(from?.id||"")===ownerId;}
 function rememberTelegramUser(from){
  if(!from?.id)return;
- const id=String(from.id),u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now(),firstSeenByMessage:true});
+ const id=String(from.id),u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0,joinedAt:Date.now(),firstSeenByMessage:true});
+ if(!Number.isFinite(Number(u.balance))||u.balance===null||u.balance===undefined)u.balance=0;
+ u.referrals=Array.isArray(u.referrals)?u.referrals:[];
+ u.earned=Number(u.earned)||0;u.gifts=Number(u.gifts)||0;
  u.username=from.username||u.username||"";u.firstName=from.first_name||u.firstName||"";u.lastName=from.last_name||u.lastName||"";
  saveStore();
 }
@@ -207,13 +210,15 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  if(p.status!=="created"||purchaseBusy.has(lock))return;
  purchaseBusy.add(lock);
  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0});
+ if(u.balance===undefined||u.balance===null||!Number.isFinite(Number(u.balance)))u.balance=0;
+ u.balance=Number(u.balance);
  const amount=Number(p.starCount);
  let debited=false;
  try{
   if(p.type!=="gift"&&p.type!=="premium")throw Error("Неизвестный тип покупки: "+String(p.type));
   if(!Number.isSafeInteger(amount)||amount<1)throw Error("В заказе указана некорректная стоимость: "+String(p.starCount));
   const current=Number(u.balance);
-  if(!Number.isFinite(current)||current<0)throw Error("Внутренний баланс пользователя повреждён: "+String(u.balance));
+  if(current<0)throw Error("Недопустимое значение баланса.");
   if(current<amount)throw Error("Недостаточно средств. На балансе: "+current+" ⭐️, требуется: "+amount+" ⭐️.");
   p.status="processing";p.processingAt=Date.now();saveStore();
   u.balance=current-amount;debited=true;
@@ -236,7 +241,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
    p.status="failed";p.error=reason;saveStore();
   }
   const balanceText="\nТекущий баланс: "+(Number(u.balance)||0)+" ⭐️.";
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"❌ Не удалось завершить покупку.\n\nПричина: "+reason+(p.status==="refunded"?"\nСписанные звёзды возвращены.":"")+balanceText,reply_markup:{inline_keyboard:[[{text:"⬅️ Повторить покупку",callback_data:p.type==="premium"?"premium_menu":"gift_page:"+(p.page||0)}],[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
+  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"❌ Не удалось завершить покупку.\n\n"+(p.status==="refunded"?"Списанные звёзды возвращены.\n":"")+"Проверь баланс и попробуй ещё раз."+balanceText,reply_markup:{inline_keyboard:[[{text:"⬅️ Повторить покупку",callback_data:p.type==="premium"?"premium_menu":"gift_page:"+(p.page||0)}],[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
  }finally{purchaseBusy.delete(lock);}
 }
 const referralBusy=new Set();
