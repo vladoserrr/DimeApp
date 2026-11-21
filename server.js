@@ -135,7 +135,7 @@ function mainMarkup(){return {inline_keyboard:[
  [{text:"⭐ Купить премиум",callback_data:"premium_menu"},{text:"💎 Купить NFT",callback_data:"nft_unavailable"}]
  ]};}
 async function sendBotMenu(chatId){
- await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в казино!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});
+ await telegramApi("sendMessage",{chat_id:chatId,text:"Выбери нужный раздел:",reply_markup:mainMarkup()});
 }
 async function showInviteMenu(chatId,messageId,userId){
  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
@@ -287,7 +287,7 @@ async function handleTelegramUpdate(update){
    if(cb.data.startsWith("premium_buy:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const [,months,amount]=cb.data.split(":");await createPurchase(chatId,messageId,userId,"premium",Number(amount),{months:Number(months)});return;}
    if(cb.data.startsWith("purchase_confirm:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Обрабатываю покупку…"});await processInternalPurchase(chatId,messageId,userId,cb.data.split(":")[1]);return;}
    if(cb.data==="promo_enter"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Отправь промокод сообщением в этот чат."});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎟 ПРОМОКОД\n\nОтправь промокод следующим сообщением, чтобы активировать его.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад в профиль",callback_data:"open_profile"}]]}});store.users[String(userId)]=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,joinedAt:Date.now()};store.users[String(userId)].awaitingPromo=true;saveStore();return;}
-   if(cb.data==="main_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в казино!\n\nВыбери нужный раздел:",reply_markup:mainMarkup()});return;}
+   if(cb.data==="main_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Выбери нужный раздел:",reply_markup:mainMarkup()});return;}
    if(cb.data==="gift_noop"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
    if(cb.data.startsWith("gift_page:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showGiftPage(chatId,messageId,Number(cb.data.split(":")[1]));return;}
    if(cb.data.startsWith("gift_buy:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const [,idx,page]=cb.data.split(":");await beginGiftPurchase(chatId,messageId,userId,idx,page);return;}
