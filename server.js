@@ -204,10 +204,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"❌ Заказ не найден или создан другим пользователем. Открой покупку заново.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}]]}});
   return;
  }
- if(p.status!=="created"||purchaseBusy.has(lock)){
-  await telegramApi("answerCallbackQuery",{callback_query_id:undefined,text:"Эта покупка уже обрабатывается или завершена."}).catch(()=>{});
-  return;
- }
+ if(p.status!=="created"||purchaseBusy.has(lock))return;
  purchaseBusy.add(lock);
  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,balance:0});
  const amount=Number(p.starCount);
@@ -225,7 +222,9 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   saveStore();
   await notifyAdminPurchase(id,{username:u.username,first_name:u.firstName,last_name:u.lastName},p.type,p);
   const purchaseName=p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев)":(p.name||"Telegram-подарок");
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+amount+" ⭐️.\nОстаток: "+u.balance+" ⭐️.\n\nКогда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+  try{
+   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+amount+" ⭐️.\nОстаток: "+u.balance+" ⭐️.\n\nКогда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+  }catch(uiError){console.error("Purchase succeeded but confirmation message failed:",uiError.message);}
  }catch(e){
   const reason=String(e?.message||e||"Неизвестная ошибка");
   console.error("Shop purchase failed:",{purchaseId,id,type:p.type,amount,balance:u.balance,status:p.status,error:reason});
