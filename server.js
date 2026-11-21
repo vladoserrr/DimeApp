@@ -204,7 +204,7 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
   saveStore();
   await notifyAdminPurchase(id,{username:u.username,first_name:u.firstName,last_name:u.lastName},p.type,p);
   const purchaseName=p.type==="premium"?"Telegram Premium на "+p.months+" месяца(ев)":(p.name||"выбранный подарок");
-  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+p.starCount+" ⭐️ DIME.\n\nОбычно отправка занимает до 48 часов. Когда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});
+  try{await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"✅ Оплата успешно принята!\n\nПокупка: "+purchaseName+"\nСписано: "+p.starCount+" ⭐️ DIME.\n\nОбычно отправка занимает до 48 часов. Когда заказ будет отправлен, бот пришлёт тебе уведомление.",reply_markup:{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"main_menu"}],[{text:"👤 Профиль",callback_data:"open_profile"}]]}});}catch(notifyError){console.error("Buyer purchase confirmation failed:",notifyError.message);}
  }catch(e){
   console.error("DIME shop purchase failed:",e.message);
   if(debited){
