@@ -226,13 +226,18 @@ async function registerReferral(userId,payload){
 async function handlePromoMessage(msg){
  const id=String(msg.from.id),code=String(msg.text||"").trim().replace(/^\/promo\s*/i,"").toUpperCase();
  if(!code)return;
- const p=store.promos[code],u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
- if(!p||p.active===false)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Промокод не найден или уже отключён."});
- p.used=p.used||[];if(p.used.includes(id))return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Ты уже активировал этот промокод."});
- if(p.limit>0&&p.used.length>=p.limit)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Лимит активаций промокода исчерпан."});
- const amount=Math.floor(Number(p.amount)||0);if(amount<1)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Промокод настроен некорректно."});
- await transfer(ownerId,id,amount,"game-promo-"+code+"-"+id,"Промокод "+code);p.used.push(id);u.earned=(Number(u.earned)||0)+amount;saveStore();
- await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"🎉 Промокод активирован! Начислено "+amount+" ⭐️."});
+ const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ const chatId=u.promoChatId||msg.chat.id,messageId=u.promoMessageId;
+ const reply=async(text)=>{const markup={inline_keyboard:[[{text:"⬅️ Вернуться",callback_data:"main_menu"}]]};if(messageId){try{await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:markup});}catch(e){console.error("Promo message edit:",e.message);await telegramApi("sendMessage",{chat_id:msg.chat.id,text,reply_markup:markup});}}else await telegramApi("sendMessage",{chat_id:msg.chat.id,text,reply_markup:markup});delete u.promoMessageId;delete u.promoChatId;saveStore();};
+ const p=store.promos[code];
+ if(!p||p.active===false)return reply("Промокод не найден или уже отключён.");
+ p.used=p.used||[];if(p.used.includes(id))return reply("Ты уже активировал этот промокод.");
+ if(p.limit>0&&p.used.length>=p.limit)return reply("Лимит активаций промокода исчерпан.");
+ const amount=Math.floor(Number(p.amount)||0);if(amount<1)return reply("Промокод настроен некорректно.");
+ try{await transfer(ownerId,id,amount,"game-promo-"+code+"-"+id,"Промокод "+code);}
+ catch(e){console.error("Promo activation failed:",e.message);return reply("Не удалось начислить награду. Попробуй позже.");}
+ p.used.push(id);u.earned=(Number(u.earned)||0)+amount;saveStore();
+ await reply("✅ Успешная активация промокода +"+amount+" ⭐️!");
 }
 async function handleTelegramUpdate(update){
  if(update?.pre_checkout_query){
@@ -286,7 +291,7 @@ async function handleTelegramUpdate(update){
    if(cb.data==="nft_unavailable"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"NFT пока недоступны.",show_alert:true});return;}
    if(cb.data.startsWith("premium_buy:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const [,months,amount]=cb.data.split(":");await createPurchase(chatId,messageId,userId,"premium",Number(amount),{months:Number(months)});return;}
    if(cb.data.startsWith("purchase_confirm:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Обрабатываю покупку…"});await processInternalPurchase(chatId,messageId,userId,cb.data.split(":")[1]);return;}
-   if(cb.data==="promo_enter"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Отправь промокод сообщением в этот чат."});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎟 ПРОМОКОД\n\nОтправь промокод следующим сообщением, чтобы активировать его.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад в профиль",callback_data:"open_profile"}]]}});store.users[String(userId)]=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,joinedAt:Date.now()};store.users[String(userId)].awaitingPromo=true;saveStore();return;}
+   if(cb.data==="promo_enter"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Отправь промокод сообщением в этот чат."});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"🎟 ПРОМОКОД\n\nОтправь промокод следующим сообщением, чтобы активировать его.",reply_markup:{inline_keyboard:[[{text:"⬅️ Назад в профиль",callback_data:"open_profile"}]]}});store.users[String(userId)]=store.users[String(userId)]||{referrals:[],earned:0,gifts:0,joinedAt:Date.now()};store.users[String(userId)].awaitingPromo=true;store.users[String(userId)].promoMessageId=messageId;store.users[String(userId)].promoChatId=chatId;saveStore();return;}
    if(cb.data==="main_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Выбери нужный раздел:",reply_markup:mainMarkup()});return;}
    if(cb.data==="gift_noop"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});return;}
    if(cb.data.startsWith("gift_page:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showGiftPage(chatId,messageId,Number(cb.data.split(":")[1]));return;}
