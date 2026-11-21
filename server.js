@@ -215,13 +215,32 @@ async function processInternalPurchase(chatId,messageId,userId,purchaseId){
  }
 }
 async function registerReferral(userId,payload){
- const id=String(userId),existing=store.users[id],isNew=!existing||!!existing.firstSeenByMessage;if(!isNew)return;
- const u=existing||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});u.registered=true;delete u.firstSeenByMessage;
- const match=/^invite_(\d+)$/.exec(payload||"");if(!match||match[1]===id)return;
- const ref=match[1],owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
- if(owner.referrals.includes(id))return;
- try{await transfer(ownerId,ref,2,"referral-"+id,"Награда за приглашение");owner.referrals.push(id);owner.earned=(Number(owner.earned)||0)+2;u.referrer=ref;saveStore();}
- catch(e){console.error("Referral reward failed:",e.message);}
+ const id=String(userId),match=/^invite_(\d+)$/.exec(String(payload||""));
+ const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now(),firstSeenByMessage:true});
+ const firstStart=!u.registered&&!!u.firstSeenByMessage;
+ u.registered=true;delete u.firstSeenByMessage;
+ if(!match||match[1]===id){saveStore();return;}
+ const ref=String(match[1]);
+ // Referral rewards are issued only for a user's first-ever /start and only once.
+ if(!firstStart||u.referrer||u.referralRewarded){saveStore();return;}
+ const owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
+ owner.referrals=Array.isArray(owner.referrals)?owner.referrals:[];
+ if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;saveStore();return;}
+ if(!ownerId){console.error("Referral reward failed: CASINO_OWNER_TELEGRAM_ID is not configured");saveStore();return;}
+ try{
+  await transfer(ownerId,ref,2,"referral-"+id,"Награда за приглашение");
+  owner.referrals.push(id);
+  owner.earned=(Number(owner.earned)||0)+2;
+  u.referrer=ref;u.referralRewarded=true;u.referralRewardedAt=Date.now();
+  saveStore();
+  try{
+   await telegramApi("sendMessage",{chat_id:Number(ref),text:"🎉 Поздравляем! Твой друг присоединился по твоей ссылке.\\n\\n⭐️ Тебе начислено +2 звезды за приглашение!"});
+  }catch(notifyError){console.error("Referral notification failed:",notifyError.message);}
+ }catch(e){
+  console.error("Referral reward failed:",{inviter:ref,invited:id,error:e.message});
+  // Do not mark the invitation as rewarded: it can be retried on a later /start.
+  saveStore();
+ }
 }
 const promoBusy=new Set();
 async function handlePromoMessage(msg){
