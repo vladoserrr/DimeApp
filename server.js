@@ -219,26 +219,24 @@ async function registerReferral(userId,payload){
  const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now(),firstSeenByMessage:true});
  const firstStart=!u.registered&&!!u.firstSeenByMessage;
  u.registered=true;delete u.firstSeenByMessage;
- if(!match||match[1]===id){saveStore();return;}
- const ref=String(match[1]);
- // Referral rewards are issued only for a user's first-ever /start and only once.
- if(!firstStart||u.referrer||u.referralRewarded){saveStore();return;}
+ if(match&&match[1]!==id&&!u.referrer&&!u.referralRewarded&&firstStart)u.pendingReferrer=String(match[1]);
+ const ref=String(u.pendingReferrer||"");
+ if(!ref||ref===id||u.referralRewarded){saveStore();return;}
  const owner=store.users[ref]||(store.users[ref]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});
  owner.referrals=Array.isArray(owner.referrals)?owner.referrals:[];
- if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;saveStore();return;}
+ if(owner.referrals.map(String).includes(id)){u.referrer=ref;u.referralRewarded=true;delete u.pendingReferrer;saveStore();return;}
  if(!ownerId){console.error("Referral reward failed: CASINO_OWNER_TELEGRAM_ID is not configured");saveStore();return;}
  try{
   await transfer(ownerId,ref,2,"referral-"+id,"Награда за приглашение");
   owner.referrals.push(id);
   owner.earned=(Number(owner.earned)||0)+2;
-  u.referrer=ref;u.referralRewarded=true;u.referralRewardedAt=Date.now();
+  u.referrer=ref;u.referralRewarded=true;u.referralRewardedAt=Date.now();delete u.pendingReferrer;
   saveStore();
   try{
-   await telegramApi("sendMessage",{chat_id:Number(ref),text:"🎉 Поздравляем! Твой друг присоединился по твоей ссылке.\\n\\n⭐️ Тебе начислено +2 звезды за приглашение!"});
+   await telegramApi("sendMessage",{chat_id:Number(ref),text:"🎉 Поздравляем! Твой друг присоединился по твоей ссылке.\n\n⭐️ Тебе начислено +2 звезды за приглашение!"});
   }catch(notifyError){console.error("Referral notification failed:",notifyError.message);}
  }catch(e){
   console.error("Referral reward failed:",{inviter:ref,invited:id,error:e.message});
-  // Do not mark the invitation as rewarded: it can be retried on a later /start.
   saveStore();
  }
 }
