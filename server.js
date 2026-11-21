@@ -131,15 +131,17 @@ async function handleTelegramUpdate(update){
  }
  const msg=update?.message;
  if(msg?.successful_payment){
-  const payment=msg.successful_payment,p=store.pending[payment.invoice_payload],id=String(msg.from.id);
-  if(!p||p.userId!==id||payment.currency!=="XTR"||Number(payment.total_amount)!==p.starCount)return;
+  const payment=msg.successful_payment,p=store.pending[payment.invoice_payload],id=String(msg.from.id),charge=payment.telegram_payment_charge_id;
+  store.paidCharges=store.paidCharges||{};
+  if(!p||p.userId!==id||payment.currency!=="XTR"||Number(payment.total_amount)!==p.starCount||store.paidCharges[charge])return;
+  store.paidCharges[charge]="processing";saveStore();
   try{
    await telegramApi("sendGift",{user_id:Number(id),gift_id:p.giftId,text:"Подарок от DIME CASINO"});
-   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});u.gifts=(Number(u.gifts)||0)+1;delete store.pending[payment.invoice_payload];saveStore();
+   const u=store.users[id]||(store.users[id]={referrals:[],earned:0,gifts:0,joinedAt:Date.now()});u.gifts=(Number(u.gifts)||0)+1;store.paidCharges[charge]="delivered";delete store.pending[payment.invoice_payload];saveStore();
    await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"🎉 Оплата прошла! Подарок отправлен в твой Telegram-профиль."});
   }catch(e){
    console.error("Gift delivery failed:",e.message);
-   try{await telegramApi("refundStarPayment",{user_id:Number(id),telegram_payment_charge_id:payment.telegram_payment_charge_id});}catch(re){console.error("Gift refund failed:",re.message);}
+   try{await telegramApi("refundStarPayment",{user_id:Number(id),telegram_payment_charge_id:charge});store.paidCharges[charge]="refunded";}catch(re){console.error("Gift refund failed:",re.message);store.paidCharges[charge]="refund_failed";}
    delete store.pending[payment.invoice_payload];saveStore();
    await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Не удалось отправить подарок. Запрос на возврат Telegram Stars отправлен."});
   }return;
