@@ -53,27 +53,37 @@ const telegramApi=async(method,payload)=>{
 };
 let botUsername="";
 async function sendBotMenu(chatId){
- const keyboard={keyboard:[[{text:"Пригласить друга"}],[{text:"Канал | Подарки"}]],resize_keyboard:true,is_persistent:true};
- await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO. Выбери действие в меню ниже.",reply_markup:keyboard});
+ const rows=[[{text:"Пригласить друга✅",callback_data:"invite_friends"}]];
+ if(channelUrl)rows.push([{text:"Канал | Подарки",url:channelUrl}]);
+ await telegramApi("sendMessage",{chat_id:chatId,text:"Добро пожаловать в DIME CASINO!\nВыбери действие:",reply_markup:{inline_keyboard:rows}});
+}
+async function showInviteMenu(chatId,messageId,userId){
+ if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
+ const link="https://t.me/"+botUsername+"?start=invite_"+userId;
+ const text="👥 ПРИГЛАШАЙ ДРУЗЕЙ\n\nТвоя персональная ссылка:\n"+link+"\n\n🎁 Получай по 2 ⭐️ за каждого приглашённого друга!\n\nОтправь ссылку друзьям — пусть присоединяются к DIME CASINO.";
+ const markup={inline_keyboard:[
+  [{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Присоединяйся к DIME CASINO!") }],
+  [{text:"⬅️ Назад в меню",callback_data:"main_menu"}]
+ ]};
+ await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:markup});
 }
 async function handleTelegramUpdate(update){
+ if(update?.callback_query){
+  const cb=update.callback_query,chatId=cb.message?.chat?.id,messageId=cb.message?.message_id,userId=cb.from?.id;
+  await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});
+  if(!chatId||!messageId||!userId)return;
+  if(cb.data==="invite_friends"){await showInviteMenu(chatId,messageId,userId);return;}
+  if(cb.data==="main_menu"){
+   const rows=[[{text:"Пригласить друга✅",callback_data:"invite_friends"}]];
+   if(channelUrl)rows.push([{text:"Канал | Подарки",url:channelUrl}]);
+   await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"Добро пожаловать в DIME CASINO!\nВыбери действие:",reply_markup:{inline_keyboard:rows}});
+  }
+  return;
+ }
  const msg=update?.message;
  if(!msg?.chat?.id||typeof msg.text!=="string")return;
  const chatId=msg.chat.id,text=msg.text.trim();
  if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)){await sendBotMenu(chatId);return;}
- if(text==="Пригласить друга"){
-  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
-  const link="https://t.me/"+botUsername+"?start=invite_"+msg.from.id;
-  await telegramApi("sendMessage",{chat_id:chatId,text:"Приглашай друзей в DIME CASINO по своей ссылке:\n"+link+"\n\nОтправь её друзьям, чтобы они открыли бота.",reply_markup:{inline_keyboard:[[{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Заходи в DIME CASINO!") }]]}});
-  return;
- }
- if(text==="Канал | Подарки"){
-  if(!channelUrl){
-   await telegramApi("sendMessage",{chat_id:chatId,text:"Ссылка на канал пока не настроена. Администратору нужно добавить DIME_CHANNEL_URL в Variables проекта DimeApp."});
-   return;
-  }
-  await telegramApi("sendMessage",{chat_id:chatId,text:"Канал DIME CASINO — новости, подарки и бонусы.",reply_markup:{inline_keyboard:[[{text:"Открыть канал",url:channelUrl}]]}});
- }
 }
 app.post("/telegram/webhook",async(req,res)=>{
  try{
