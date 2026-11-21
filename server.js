@@ -118,7 +118,7 @@ async function handlePromoMessage(msg){
  p.used=p.used||[];if(p.used.includes(id))return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Ты уже активировал этот промокод."});
  if(p.limit>0&&p.used.length>=p.limit)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Лимит активаций промокода исчерпан."});
  const amount=Math.floor(Number(p.amount)||0);if(amount<1)return telegramApi("sendMessage",{chat_id:msg.chat.id,text:"Промокод настроен некорректно."});
- await transfer(ownerId,id,amount,"dime-promo-"+code+"-"+id,"Промокод "+code);p.used.push(id);saveStore();
+ await transfer(ownerId,id,amount,"dime-promo-"+code+"-"+id,"Промокод "+code);p.used.push(id);u.earned=(Number(u.earned)||0)+amount;saveStore();
  await telegramApi("sendMessage",{chat_id:msg.chat.id,text:"🎉 Промокод активирован! Начислено "+amount+" ⭐️."});
 }
 async function handleTelegramUpdate(update){
