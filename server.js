@@ -149,12 +149,17 @@ function mainMarkup(){return {inline_keyboard:[
 async function sendBotMenu(chatId){
  await telegramApi("sendMessage",{chat_id:chatId,text:"Выбери нужный раздел:",reply_markup:mainMarkup()});
 }
+const quickTasks={post:{title:"Выложить пост в свой канал",reward:7,instruction:"Выложи в свой личный канал пост с рекомендацией нашего проекта и оставь в нём свою реферальную ссылку. Затем нажми «Выслать скрин» и отправь скриншот опубликованного поста."},story:{title:"Выложить историю",reward:5,instruction:"Выложи историю в Instagram или Telegram с рекомендацией нашего проекта. Затем нажми «Выслать скрин» и отправь скриншот истории."},insta:{title:"Подписаться на Instagram",reward:3,instruction:"Подпишись на Instagram @vlad_purg.in. Затем нажми «Выслать скрин» и отправь скриншот подписки."}};
+function quickTasksKeyboard(){return {inline_keyboard:[[{text:"📣 Выложить пост в свой канал · 7 ⭐️",callback_data:"quick_task:post"}],[{text:"📸 Выложить историю · 5 ⭐️",callback_data:"quick_task:story"}],[{text:"📷 Подписаться на Instagram · 3 ⭐️",callback_data:"quick_task:insta"}],[{text:"⬅️ Назад",callback_data:"invite_friends"}]]};}
+async function showQuickTasks(chatId,messageId){await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"⚡️ ЗАРАБОТАТЬ БЫСТРЕЕ\n\nВыбери задание. Награда начисляется после проверки скриншота администратором.",reply_markup:quickTasksKeyboard()});}
+async function showQuickTaskInstruction(chatId,messageId,key){const task=quickTasks[key];if(!task)return;await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text:"📌 "+task.title+"\n\n"+task.instruction+"\n\nНаграда после проверки: "+task.reward+" ⭐️",reply_markup:{inline_keyboard:[[{text:"📤 Выслать скрин",callback_data:"quick_submit:"+key}],[{text:"⬅️ К заданиям",callback_data:"quick_tasks"}]]}});}
 async function showInviteMenu(chatId,messageId,userId){
  if(!botUsername){const me=await telegramApi("getMe",{});botUsername=me.username;}
  const link="https://t.me/"+botUsername+"?start=invite_"+userId;
  const text="💰 ЗАРАБОТАТЬ НА ПРИГЛАШЕНИЯХ\n\nТвоя персональная ссылка:\n"+link+"\n\n🎁 Получай по 2 ⭐️ за каждого приглашённого друга!\n\nОтправь ссылку друзьям, чтобы пригласить их.";
  await telegramApi("editMessageText",{chat_id:chatId,message_id:messageId,text,reply_markup:{inline_keyboard:[
   [{text:"Поделиться ссылкой",url:"https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Присоединяйся к нам!") }],
+  [{text:"⚡️ Заработать быстрее",callback_data:"quick_tasks"}],
   [{text:"⬅️ Назад",callback_data:"main_menu"}]
  ]}});
 }
@@ -354,6 +359,10 @@ async function handleTelegramUpdate(update){
     if(prompts[action])await askAdminInput(chatId,messageId,userId,action,prompts[action]);return;
    }
    if(cb.data==="invite_friends"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showInviteMenu(chatId,messageId,userId);return;}
+   if(cb.data==="quick_tasks"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showQuickTasks(chatId,messageId);return;}
+   if(cb.data.startsWith("quick_task:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showQuickTaskInstruction(chatId,messageId,cb.data.split(":")[1]);return;}
+   if(cb.data.startsWith("quick_submit:")){const key=cb.data.split(":")[1];if(!quickTasks[key]){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Задание не найдено.",show_alert:true});return;}const u=store.users[String(userId)]||(store.users[String(userId)]={referrals:[],earned:0,gifts:0,balance:0});u.awaitingTaskScreenshot=key;saveStore();await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Пришли скриншот следующим сообщением."});await telegramApi("sendMessage",{chat_id:chatId,text:"📷 Отправь скриншот выполнения задания «"+quickTasks[key].title+"» одним фото."});return;}
+   if(isAdmin(cb.from)&&cb.data.startsWith("quick_reward:")){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});const taskId=cb.data.slice(13),sub=store.quickTaskSubmissions?.[taskId];if(!sub||sub.status!=="submitted"){await telegramApi("sendMessage",{chat_id:chatId,text:"Задание уже обработано или не найдено."});return;}const task=quickTasks[sub.taskKey],u=store.users[String(sub.userId)];if(!task||!u){await telegramApi("sendMessage",{chat_id:chatId,text:"Пользователь или задание не найдены. Баланс не изменён."});return;}u.balance=(Number(u.balance)||0)+task.reward;u.earned=(Number(u.earned)||0)+task.reward;sub.status="approved";sub.rewardedAt=Date.now();sub.rewardedBy=String(userId);saveStore();await telegramApi("sendMessage",{chat_id:Number(sub.userId),text:"🎉 Поздравляем! Задание одобрено.\n\n⭐️ Начислено +"+task.reward+" звёзд!\nБаланс: "+u.balance+" ⭐️"});await telegramApi("editMessageCaption",{chat_id:chatId,message_id:messageId,caption:(cb.message.caption||"Задание")+"\n\n✅ Начислено "+task.reward+" ⭐️.",reply_markup:{inline_keyboard:[]}});return;}
    if(cb.data==="open_profile"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showProfile(chatId,messageId,userId);return;}
    if(cb.data==="premium_menu"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id});await showPremiumMenu(chatId,messageId);return;}
    if(cb.data==="nft_unavailable"){await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"NFT пока недоступны.",show_alert:true});return;}
@@ -368,8 +377,11 @@ async function handleTelegramUpdate(update){
   }catch(e){console.error("Telegram callback:",e.message);await telegramApi("answerCallbackQuery",{callback_query_id:cb.id,text:"Не удалось выполнить действие. Попробуй ещё раз.",show_alert:true}).catch(()=>{});}
   return;
  }
- if(!msg?.chat?.id||typeof msg.text!=="string")return;
- const chatId=msg.chat.id,text=msg.text.trim(),id=String(msg.from?.id||"");
+ if(!msg?.chat?.id)return;
+ const chatId=msg.chat.id,id=String(msg.from?.id||"");
+ if(msg.photo?.length&&store.users[id]?.awaitingTaskScreenshot){const key=store.users[id].awaitingTaskScreenshot,task=quickTasks[key];delete store.users[id].awaitingTaskScreenshot;if(!task){saveStore();await telegramApi("sendMessage",{chat_id:chatId,text:"Задание не найдено. Выбери его заново."});return;}store.quickTaskSubmissions=store.quickTaskSubmissions||{};const taskId=crypto.randomBytes(6).toString("hex"),photo=msg.photo[msg.photo.length-1],from=msg.from||{},username=from.username?"@"+from.username:"не указан";store.quickTaskSubmissions[taskId]={userId:id,username:from.username||"",firstName:from.first_name||"",taskKey:key,status:"submitted",fileId:photo.file_id,createdAt:Date.now()};saveStore();const caption="🧾 НОВОЕ ЗАДАНИЕ НА ПРОВЕРКУ\n\nЗадание: "+task.title+"\nНаграда: "+task.reward+" ⭐️\nОтправитель: "+username+"\nИмя: "+(from.first_name||"не указано")+"\nTelegram ID: "+id;await telegramApi("sendPhoto",{chat_id:Number(ownerId),photo:photo.file_id,caption,reply_markup:{inline_keyboard:[[{text:"⭐️ Начислить за задание",callback_data:"quick_reward:"+taskId}]]}});await telegramApi("sendMessage",{chat_id:chatId,text:"✅ Скриншот отправлен администратору на проверку. После одобрения звёзды поступят на баланс."});return;}
+ if(typeof msg.text!=="string")return;
+ const text=msg.text.trim();
  if(/^\/admin2005(?:@\w+)?$/i.test(text)){if(!ownerId){await telegramApi("sendMessage",{chat_id:chatId,text:"Админ-панель не настроена: в Railway задайте CASINO_OWNER_TELEGRAM_ID — ваш числовой Telegram ID."});return;}if(!isAdmin(msg.from)){await telegramApi("sendMessage",{chat_id:chatId,text:"Нет доступа к админ-панели. Проверьте CASINO_OWNER_TELEGRAM_ID в Railway: нужен числовой Telegram ID аккаунта, с которого отправлена команда."});return;}delete store.adminState[id];saveStore();await showAdminMenu(chatId);return;}
  if(store.blocked[id]&&!isAdmin(msg.from)){await telegramApi("sendMessage",{chat_id:chatId,text:"Доступ к боту ограничен."});return;}
  if(store.adminState[id]){
